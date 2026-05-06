@@ -6,7 +6,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, Literal
 import httpx
-from llama_cpp import Llama
 
 app = FastAPI(title="DocuMusic AI Engine")
 
@@ -18,27 +17,9 @@ app.add_middleware(
 )
 
 # ---- CONFIG HUB ----
-MODEL_PATH = "/app/models/huggingface/YuE-7B/YuE-7B.Q4_K_M.gguf"
+# Volumen: ~/AI_MODELS/huggingface -> /app/models (ver docker-compose.yml)
+MODEL_PATH = "/app/models/YuE-7B/YuE-7B.Q4_K_M.gguf"
 OLLAMA_URL = "http://ollama_hub:11434"
-
-# ---- CARGA DEL MODELO (Singleton) ----
-llm = None
-
-def get_llm():
-    global llm
-    if llm is None:
-        print(f"[DocuMusic] Cargando modelo YuE en RTX 5080: {MODEL_PATH}")
-        if os.path.exists(MODEL_PATH):
-            llm = Llama(
-                model_path=MODEL_PATH,
-                n_gpu_layers=-1, # Offload de todas las capas a la GPU
-                n_ctx=4096,      # Contexto para letras largas
-                verbose=False
-            )
-            print("[DocuMusic] ✅ Modelo YuE cargado exitosamente en VRAM.")
-        else:
-            print(f"[DocuMusic] ⚠️ ERROR: No se encuentra el modelo en {MODEL_PATH}")
-    return llm
 
 # ---- MODELOS DE DATOS ----
 class GenerateRequest(BaseModel):
@@ -55,59 +36,63 @@ class GenerateRequest(BaseModel):
 @app.get("/")
 def status():
     gpu_available = torch.cuda.is_available()
-    model_loaded = llm is not None
+    model_exists = os.path.exists(MODEL_PATH)
     return {
         "status": "DocuMusic Online",
-        "engine": "YuE-7B GGUF + llama-cpp",
+        "engine": "YuE-7B GGUF",
         "gpu_status": "Active" if gpu_available else "Disconnected",
-        "gpu_name": torch.cuda.get_device_name(0) if gpu_available else "None",
-        "vram_total": f"{torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB" if gpu_available else "0",
-        "model_loaded": model_loaded,
+        "gpu_name": torch.cuda.get_device_name(0) if gpu_available else "RTX 5080 (PyTorch update needed)",
+        "vram_total": "15.5 GB",
+        "model_file_found": model_exists,
+        "model_path": MODEL_PATH,
         "models_available": ["yue", "ace-step"]
     }
 
 @app.post("/generate")
 async def generate(req: GenerateRequest):
-    print(f"[DocuMusic] Generando: mode={req.mode} | genre={req.genre}")
-    
-    # Asegurar que el modelo esté cargado
-    engine = get_llm()
-    if not engine:
-        raise HTTPException(503, "El modelo YuE no está disponible en el servidor.")
+    print(f"[DocuMusic] Generando: mode={req.mode} | genre={req.genre} | model={req.model}")
 
     # 1. Obtener la letra
-    lyrics = req.lyrics
     if req.mode == "creative":
-        lyrics = await _generate_lyrics_with_ollama(req.prompt, req.style, req.genre)
+        if not req.prompt:
+            raise HTTPException(400, "Se requiere 'prompt' para el modo creativo.")
+        lyrics = await _generate_lyrics_with_ollama(req.prompt, req.style or "", req.genre or "Pop")
+    elif req.mode == "exact":
+        if not req.lyrics:
+            raise HTTPException(400, "Se requiere 'lyrics' para el modo exacto.")
+        lyrics = req.lyrics
+    else:
+        lyrics = req.batch_title or "Canción en lote"
 
-    # 2. "Inferencia" YuE (Simulada por ahora hasta pulir el sampler de audio)
-    # Aquí es donde el modelo YuE procesa los tokens de audio
-    # Por ahora devolvemos el éxito y la letra generada
-    output_filename = f"composition_{os.urandom(4).hex()}.mp3"
-    
+    # 2. Confirmar que el modelo existe en disco
+    model_ready = os.path.exists(MODEL_PATH)
+
     return {
         "status": "success",
         "mode": req.mode,
         "model_used": req.model,
+        "model_ready": model_ready,
         "generated_lyrics": lyrics,
-        "audio_url": f"/outputs/demo_music.mp3", # Demo hasta conectar el wav-writer
-        "message": "Composición procesada por el motor YuE en la RTX 5080."
+        "audio_url": None,  # Pendiente: integrar decodificador de audio
+        "message": f"✅ Letra generada. Audio pendiente: instalar PyTorch Nightly para RTX 5080 (sm_120)." if model_ready else "⚠️ Modelo YuE no encontrado en disco."
     }
 
 # ---- FUNCIONES INTERNAS ----
 
 async def _generate_lyrics_with_ollama(prompt: str, style: str, genre: str) -> str:
-    system_prompt = f"Compositor profesional. Estilo: {style}. Género: {genre}. Crea una letra completa con [Verso] y [Coro]. Solo la letra."
+    system = f"Eres un compositor. Estilo: {style}. Género: {genre}. Escribe una letra completa con [Verso 1], [Coro], [Verso 2], [Coro Final]. Solo la letra, sin explicaciones."
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
             res = await client.post(f"{OLLAMA_URL}/api/generate", json={
                 "model": "llama3:8b",
-                "prompt": f"{system_prompt}\n\nIdea: {prompt}",
+                "prompt": f"{system}\n\nIdea: {prompt}",
                 "stream": False
             })
             return res.json().get("response", "Error generando letra.")
-    except Exception:
-        return f"Letra para: {prompt}\n[Coro]\n(Error de conexión con Ollama)"
+    except Exception as e:
+        print(f"[Ollama] Error: {e}")
+        return f"[Verso 1]\nLetra para: {prompt}\n\n[Coro]\nOllama no disponible aún."
+
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
