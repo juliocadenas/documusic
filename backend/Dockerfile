@@ -12,22 +12,25 @@ RUN apt-get update && apt-get install -y \
     cmake \
     ninja-build \
     build-essential \
+    libopenblas-dev \
     && rm -rf /var/lib/apt/lists/*
-
-# Configurar variables de entorno para compilación de llama-cpp con CUDA
-ENV CMAKE_ARGS="-DLLAMA_CUDA=on"
-ENV FORCE_CMAKE=1
 
 # Directorio de trabajo
 WORKDIR /app
 
-# Copiar requerimientos
-COPY requirements.txt .
+# Actualizar pip
+RUN pip3 install --upgrade pip
 
 # Instalar PyTorch con soporte CUDA 12.1
 RUN pip3 install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cu121
 
-# Instalar el resto de dependencias (esto compilará llama-cpp-python con CUDA)
+# Instalar llama-cpp-python usando el binario pre-compilado para CUDA 12.1
+# Esto evita tener que compilarlo desde cero y es mucho más rápido y seguro
+RUN pip3 install llama-cpp-python \
+    --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu121
+
+# Copiar requerimientos e instalar el resto
+COPY requirements.txt .
 RUN pip3 install --no-cache-dir -r requirements.txt
 RUN pip3 install --no-cache-dir bitsandbytes accelerate
 
