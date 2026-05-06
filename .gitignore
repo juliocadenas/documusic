@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# Modelos (No subir al repo, son muy pesados)
+models/
+*.gguf
+*.bin
+*.pt
+*.safetensors
+
+# Docker
+.dockerignore
+
+# IDEs
+.vscode/
+.idea/
