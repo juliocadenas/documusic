@@ -1,340 +1,335 @@
-import { useState, useEffect } from 'react'
-import './App.css'
+import React, { useState, useEffect, useRef } from 'react';
+import axios from 'axios';
+import './App.css';
 
-const API = 'http://localhost:8000'
+// ---- ICONOS INLINE (sin dependencias extra) ----
+const Icon = ({ d, size = 18 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
+    stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d={d} />
+  </svg>
+);
+const MusicIcon = () => <Icon d="M9 18V5l12-2v13M9 18a3 3 0 1 1-6 0 3 3 0 0 1 6 0zm12-2a3 3 0 1 1-6 0 3 3 0 0 1 6 0z" />;
+const ZapIcon = () => <Icon d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />;
+const UploadIcon = () => <Icon d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" />;
+const SpinIcon = () => <Icon d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />;
+const PenIcon = () => <Icon d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />;
+const LayersIcon = () => <Icon d="M12 2l10 6.5v7L12 22 2 15.5v-7L12 2zM12 22v-6.5M22 8.5l-10 7-10-7" />;
+const LightbulbIcon = () => <Icon d="M9 18h6M10 22h4M12 2a7 7 0 0 1 7 7c0 2.38-1.19 4.47-3 5.74V17H8v-2.26C6.19 13.47 5 11.38 5 9a7 7 0 0 1 7-7z" />;
 
-// ─── Engine cards config ────────────────────────────────────────────────────
-const ENGINE_META = {
-  'yue': {
-    color: '#7c3aed',
-    glow: 'rgba(124, 58, 237, 0.4)',
-    icon: '🎤',
-    badge: 'VOCALS · ESTRUCTURA · HI-FI',
+// ---- MODELOS DISPONIBLES ----
+const MODELS = [
+  {
+    id: 'yue',
+    name: 'YuE 7B',
+    badge: 'Letra + Voz',
+    desc: 'Genera canciones completas: letra, melodía y voz. Ideal para producción creativa desde cero.',
+    className: 'yue',
   },
-  'ace-step': {
-    color: '#db2777',
-    glow: 'rgba(219, 39, 119, 0.4)',
-    icon: '⚡',
-    badge: 'FULL SONG · 10 MIN · APACHE 2.0',
+  {
+    id: 'ace-step',
+    name: 'ACE-Step 1.5',
+    badge: 'Control fino',
+    desc: 'Control avanzado sobre el audio generado. Ideal para respetar letras exactas con precisión.',
+    className: 'ace',
   },
-}
+];
+
+// ---- GÉNEROS MUSICALES ----
+const GENRES = ['Pop', 'Rock', 'Electronic', 'Jazz', 'Cinematic', 'Lo-Fi', 'Reggaeton', 'Classical', 'Hip-Hop', 'Cumbia'];
 
 export default function App() {
-  const [mode, setMode] = useState('idea')
-  const [status, setStatus] = useState('')
-  const [queue, setQueue] = useState([])
-  const [library, setLibrary] = useState([])
-  const [form, setForm] = useState({ title: '', style: '', lyrics: '', idea: '' })
-  const [engines, setEngines] = useState([])
-  const [activeEngine, setActiveEngine] = useState(null)
-  const [gpuInfo, setGpuInfo] = useState(null)
-  const [switching, setSwitching] = useState(false)
-  const [activeTab, setActiveTab] = useState('studio') // 'studio' | 'library'
+  const [model, setModel] = useState('yue');
+  const [mode, setMode] = useState('creative'); // creative | exact | factory
+  const [serverStatus, setServerStatus] = useState(null);
 
-  // ── Cargar estado inicial ──────────────────────────────────────────────────
+  // Modo Creativo
+  const [idea, setIdea] = useState('');
+  const [style, setStyle] = useState('');
+  const [genre, setGenre] = useState('Cinematic');
+
+  // Modo Exacto
+  const [exactLyrics, setExactLyrics] = useState('');
+  const [exactGenre, setExactGenre] = useState('Pop');
+
+  // Modo Fábrica
+  const [wordFile, setWordFile] = useState(null);
+  const [batchQueue, setBatchQueue] = useState([]);
+  const [dragover, setDragover] = useState(false);
+  const fileInputRef = useRef(null);
+
+  // Estado de generación
+  const [loading, setLoading] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState(null);
+
+  // Consultar estado del servidor via proxy de Vite
   useEffect(() => {
-    fetchEngines()
-    fetchGpuStatus()
-    fetchLibrary()
+    axios.get('/api/')
+      .then(r => setServerStatus(r.data))
+      .catch(() => setServerStatus({ gpu_name: 'Offline', gpu_status: 'Disconnected', vram_total: '--' }));
+  }, []);
 
-    const gpuInterval = setInterval(fetchGpuStatus, 5000)
-    return () => clearInterval(gpuInterval)
-  }, [])
+  // ---- HANDLERS ----
+  const handleGenerate = async () => {
+    setLoading(true);
+    setProgress(0);
+    setResult(null);
+    setError(null);
 
-  // ── Polling de progreso ────────────────────────────────────────────────────
-  useEffect(() => {
-    const active = queue.filter(i => i.status !== 'completed' && i.status !== 'error')
-    if (!active.length) return
-
-    const interval = setInterval(async () => {
-      const updated = await Promise.all(queue.map(async item => {
-        if (item.status === 'completed' || item.status === 'error') return item
-        try {
-          const res = await fetch(`${API}/progress/${item.id}`)
-          const data = await res.json()
-          if (data.status === 'completed') fetchLibrary()
-          return data.status !== 'not_found' ? { ...item, ...data } : item
-        } catch { return item }
-      }))
-      setQueue(updated)
-    }, 2000)
-
-    return () => clearInterval(interval)
-  }, [queue])
-
-  async function fetchEngines() {
-    try {
-      const res = await fetch(`${API}/engines/`)
-      const data = await res.json()
-      setEngines(data.engines || [])
-      setActiveEngine(data.active)
-    } catch { /* backend offline */ }
-  }
-
-  async function fetchGpuStatus() {
-    try {
-      const res = await fetch(`${API}/engines/status/`)
-      const data = await res.json()
-      setGpuInfo(data)
-    } catch { /* backend offline */ }
-  }
-
-  async function fetchLibrary() {
-    try {
-      const res = await fetch(`${API}/library/`)
-      const data = await res.json()
-      setLibrary(data.songs || [])
-    } catch { /* backend offline */ }
-  }
-
-  async function handleSwitchEngine(engineId) {
-    if (switching || engineId === activeEngine) return
-    setSwitching(true)
-    setStatus(`Cambiando al motor ${engineId.toUpperCase()}... liberando VRAM...`)
+    // Simulación de progreso mientras se genera
+    const interval = setInterval(() => {
+      setProgress(p => Math.min(p + Math.random() * 8, 90));
+    }, 800);
 
     try {
-      const res = await fetch(`${API}/engines/switch/`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ engine: engineId }),
-      })
-      const data = await res.json()
-      setActiveEngine(engineId)
-      setStatus(`✅ Motor ${engineId.toUpperCase()} activo y listo.`)
-      fetchGpuStatus()
+      let payload = { model };
+
+      if (mode === 'creative') {
+        payload = { ...payload, mode: 'creative', prompt: idea, style, genre };
+      } else if (mode === 'exact') {
+        payload = { ...payload, mode: 'exact', lyrics: exactLyrics, genre: exactGenre };
+      }
+
+      const res = await axios.post('/api/generate', payload);
+      setProgress(100);
+      setResult(res.data);
     } catch (e) {
-      setStatus(`❌ Error al cambiar de motor: ${e.message}`)
+      setError('Error al conectar con el servidor de Madrid. Verifica que el contenedor esté activo.');
     } finally {
-      setSwitching(false)
+      clearInterval(interval);
+      setLoading(false);
     }
-  }
+  };
 
-  async function handleGenerate(e) {
-    e.preventDefault()
-    if (!activeEngine) { setStatus('⚠️ Selecciona un motor de IA antes de generar.'); return }
-    setStatus('Enviando a la cola de producción...')
-
-    try {
-      let response
-      if (mode === 'bulk') {
-        const fileInput = document.querySelector('input[type="file"]')
-        const fd = new FormData()
-        fd.append('file', fileInput.files[0])
-        response = await fetch(`${API}/bulk-generate/`, { method: 'POST', body: fd })
-      } else {
-        response = await fetch(`${API}/generate-song/`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            title: form.title || 'Sin título',
-            style: form.style || 'Pop',
-            lyrics: mode === 'idea' ? form.idea : form.lyrics,
-          }),
-        })
-      }
-
-      const data = await response.json()
-      if (data.song_id) {
-        setQueue([{ id: data.song_id, title: form.title || 'Nueva Canción', status: 'queued', percent: 0, engine: activeEngine }, ...queue])
-        setStatus(`🎵 Canción encolada con motor ${activeEngine.toUpperCase()}.`)
-      } else if (data.songs_found) {
-        setStatus(`📦 ${data.songs_found} canciones en cola.`)
-      } else if (data.detail) {
-        setStatus(`⚠️ ${data.detail}`)
-      }
-    } catch (err) {
-      setStatus(`❌ Error: ${err.message}`)
+  const handleFileDrop = (e) => {
+    e.preventDefault();
+    setDragover(false);
+    const file = e.dataTransfer?.files[0] || e.target.files[0];
+    if (file) {
+      setWordFile(file);
+      // Simular parsing del Word para mostrar cola
+      setBatchQueue([
+        { id: 1, title: 'Canción 1 (del Word)', status: 'pending' },
+        { id: 2, title: 'Canción 2 (del Word)', status: 'pending' },
+        { id: 3, title: 'Canción 3 (del Word)', status: 'pending' },
+      ]);
     }
-  }
+  };
 
-  const handleInput = e => setForm({ ...form, [e.target.name]: e.target.value })
+  const handleBatchProcess = async () => {
+    setLoading(true);
+    for (let i = 0; i < batchQueue.length; i++) {
+      setBatchQueue(q => q.map((item, idx) =>
+        idx === i ? { ...item, status: 'processing' } : item
+      ));
+      await new Promise(r => setTimeout(r, 3000)); // Simulación por item
+      setBatchQueue(q => q.map((item, idx) =>
+        idx === i ? { ...item, status: 'done' } : item
+      ));
+    }
+    setLoading(false);
+  };
 
-  // ─── Render ────────────────────────────────────────────────────────────────
+  const isOnline = serverStatus?.gpu_status !== 'Disconnected';
+
   return (
-    <div className="app-container">
-
-      {/* HEADER */}
+    <div className="app">
+      {/* ---- HEADER ---- */}
       <header>
-        <div className="logo">DOCUMUSIC <span>FACTORY</span></div>
-        <div className="header-right">
-          {gpuInfo?.gpu_name && (
-            <div className="gpu-pill">
-              <span className="gpu-dot"></span>
-              {gpuInfo.gpu_name} · {gpuInfo.vram_used_gb}GB / {gpuInfo.vram_total_gb}GB VRAM
-            </div>
-          )}
-          <div className="tabs">
-            {['studio', 'library'].map(t => (
-              <button key={t} className={`tab-btn ${activeTab === t ? 'active' : ''}`} onClick={() => setActiveTab(t)}>
-                {t === 'studio' ? '🎛️ Studio' : '📚 Librería'}
-              </button>
-            ))}
-          </div>
+        <div className="logo">
+          <div className="logo-icon">♪</div>
+          DocuMusic
+        </div>
+        <div className="gpu-status">
+          <div className={`gpu-dot ${isOnline ? 'online' : ''}`} />
+          {isOnline
+            ? `${serverStatus?.gpu_name} · ${serverStatus?.vram_total} VRAM`
+            : 'Servidor Offline'}
         </div>
       </header>
 
-      {/* ENGINE SELECTOR */}
-      <section className="engine-selector">
-        <h3 className="section-label">Motor de IA Activo</h3>
-        <div className="engine-grid">
-          {engines.map(eng => {
-            const meta = ENGINE_META[eng.id] || {}
-            const isActive = eng.id === activeEngine
-            return (
-              <div
-                key={eng.id}
-                className={`engine-card ${isActive ? 'engine-active' : ''} ${switching ? 'engine-switching' : ''}`}
-                style={{ '--engine-color': meta.color, '--engine-glow': meta.glow }}
-                onClick={() => handleSwitchEngine(eng.id)}
-              >
-                <div className="engine-icon">{meta.icon}</div>
-                <div className="engine-info">
-                  <strong>{eng.id.toUpperCase()}</strong>
-                  <span className="engine-badge">{meta.badge}</span>
-                  <small>{eng.description}</small>
-                </div>
-                <div className="engine-specs">
-                  <span>💾 {eng.capabilities.vram_gb_required}GB VRAM</span>
-                  {eng.capabilities.vocals && <span>🎤 Voces</span>}
-                  {eng.capabilities.structure_aware && <span>📋 Estructura</span>}
-                  <span>⏱ {eng.capabilities.max_duration_min} min</span>
-                </div>
-                {isActive && <div className="engine-active-indicator">ACTIVO {switching ? '⟳' : '✓'}</div>}
-              </div>
-            )
-          })}
-        </div>
-        {status && <div className="status-box">{status}</div>}
-      </section>
-
-      {/* STUDIO TAB */}
-      {activeTab === 'studio' && (
-        <main className="dashboard-grid">
-          {/* Form */}
-          <section className="panel">
-            <h2 style={{ marginBottom: '1.5rem' }}>
-              {mode === 'idea' ? '💡 Nueva Creación' : mode === 'lyrics' ? '📝 Editor de Producción' : '📦 Carga Industrial'}
-            </h2>
-
-            <div className="mode-tabs">
-              {[['idea', '💡 Idea'], ['lyrics', '📝 Letra'], ['bulk', '📦 Masivo']].map(([m, label]) => (
-                <button key={m} className={`mode-btn ${mode === m ? 'mode-active' : ''}`} onClick={() => setMode(m)}>{label}</button>
-              ))}
+      <main>
+        {/* ---- SELECTOR DE MODELO ---- */}
+        <p className="section-title">Motor de Generación</p>
+        <div className="model-selector">
+          {MODELS.map(m => (
+            <div
+              key={m.id}
+              className={`model-card ${m.className} ${model === m.id ? 'selected' : ''}`}
+              onClick={() => setModel(m.id)}
+            >
+              <span className={`model-badge ${m.className}`}>{m.badge}</span>
+              <div className="model-name">{m.name}</div>
+              <div className="model-desc">{m.desc}</div>
             </div>
+          ))}
+        </div>
 
-            <form onSubmit={handleGenerate} style={{ marginTop: '1.5rem' }}>
-              {mode !== 'bulk' && (
-                <div className="form-group">
-                  <label>Título del Proyecto</label>
-                  <input name="title" type="text" placeholder="Ej: Atardecer en el Cosmos" value={form.title} onChange={handleInput} />
-                </div>
-              )}
-              <div className="form-group">
-                <label>{mode === 'bulk' ? 'Archivo .docx' : 'Estilo y Mood'}</label>
-                {mode === 'bulk'
-                  ? <input type="file" accept=".docx" required />
-                  : <input name="style" type="text" placeholder="Ej: Melodic Techno, 128bpm, ethereal pads" value={form.style} onChange={handleInput} />
-                }
-              </div>
-              {mode === 'idea' && (
-                <div className="form-group">
-                  <label>Concepto Creativo</label>
-                  <textarea name="idea" rows="5" placeholder="Describe de qué trata la canción..." value={form.idea} onChange={handleInput}></textarea>
-                </div>
-              )}
-              {mode === 'lyrics' && (
-                <div className="form-group">
-                  <label>Script (usa [Verse], [Chorus], [Bridge])</label>
-                  <textarea name="lyrics" rows="10" placeholder={`[Verse 1]\nLetra aquí...\n\n[Chorus]\nEstribillo aquí...`} value={form.lyrics} onChange={handleInput}></textarea>
-                </div>
-              )}
-              <button type="submit" className="btn generate-btn" disabled={!activeEngine || switching}>
-                {!activeEngine ? 'Selecciona un motor primero' : mode === 'bulk' ? '⚡ PROCESAR FACTORÍA' : '🎵 INICIAR GENERACIÓN'}
-              </button>
-            </form>
-          </section>
+        {/* ---- SELECTOR DE MODALIDAD ---- */}
+        <p className="section-title">Modalidad de Composición</p>
+        <div className="mode-tabs">
+          <button className={`mode-tab ${mode === 'creative' ? 'active' : ''}`} onClick={() => setMode('creative')}>
+            <LightbulbIcon /> Modo Creativo
+          </button>
+          <button className={`mode-tab ${mode === 'exact' ? 'active' : ''}`} onClick={() => setMode('exact')}>
+            <PenIcon /> Letra Exacta
+          </button>
+          <button className={`mode-tab ${mode === 'factory' ? 'active' : ''}`} onClick={() => setMode('factory')}>
+            <LayersIcon /> Fábrica por Lotes
+          </button>
+        </div>
 
-          {/* Monitor */}
-          <section className="panel">
-            <h2 style={{ marginBottom: '1.5rem' }}>📡 Monitor de Producción</h2>
-
-            <div className="audio-preview-mock">
-              <div className="visualizer-bars">
-                {[...Array(24)].map((_, i) => (
-                  <div key={i} className={`v-bar ${queue.some(q => q.status === 'generating_audio') ? 'v-bar-active' : ''}`}
-                    style={{ animationDelay: `${i * 0.04}s` }}></div>
+        {/* ======== MODO CREATIVO ======== */}
+        {mode === 'creative' && (
+          <div className="panel">
+            <div className="form-group">
+              <label>Tu Idea Musical</label>
+              <textarea
+                rows="4"
+                placeholder="Describe tu visión: una melodía de piano melancólica con sintetizadores espaciales que evocan soledad en una ciudad nocturna..."
+                value={idea}
+                onChange={e => setIdea(e.target.value)}
+              />
+            </div>
+            <div className="form-group">
+              <label>Estilo Musical Libre</label>
+              <textarea
+                rows="2"
+                placeholder="Ej: Influenciado por Hans Zimmer, tempo lento, acordes menores, ambiente cinematográfico..."
+                value={style}
+                onChange={e => setStyle(e.target.value)}
+              />
+              <div className="style-chips">
+                {GENRES.map(g => (
+                  <span key={g} className={`chip ${genre === g ? 'active' : ''}`} onClick={() => setGenre(g)}>
+                    {g}
+                  </span>
                 ))}
               </div>
-              <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginTop: '1.2rem' }}>
-                {queue.length > 0 ? `Procesando en ${activeEngine?.toUpperCase()}...` : 'Esperando señal...'}
-              </p>
+            </div>
+            <button className="generate-btn" onClick={handleGenerate} disabled={loading || !idea || !isOnline}>
+              {loading ? <><span className="spin"><SpinIcon /></span> Generando...</> : <><ZapIcon /> Generar Composición</>}
+            </button>
+          </div>
+        )}
+
+        {/* ======== MODO LETRA EXACTA ======== */}
+        {mode === 'exact' && (
+          <div className="panel">
+            <div className="form-group">
+              <label>Letra Exacta (el modelo la respetará al 100%)</label>
+              <textarea
+                rows="10"
+                placeholder={"Escribe aquí la letra completa de la canción.\n\n[Verso 1]\nEscribe tu letra...\n\n[Coro]\nEscribe el coro..."}
+                value={exactLyrics}
+                onChange={e => setExactLyrics(e.target.value)}
+                style={{ fontFamily: 'monospace', fontSize: '0.9rem' }}
+              />
+            </div>
+            <div className="form-group">
+              <label>Género Musical</label>
+              <select value={exactGenre} onChange={e => setExactGenre(e.target.value)}>
+                {GENRES.map(g => <option key={g}>{g}</option>)}
+              </select>
+            </div>
+            <button className="generate-btn" onClick={handleGenerate} disabled={loading || !exactLyrics || !isOnline}>
+              {loading ? <><span className="spin"><SpinIcon /></span> Musicalizando Letra...</> : <><MusicIcon /> Musicalizar Letra Exacta</>}
+            </button>
+          </div>
+        )}
+
+        {/* ======== MODO FÁBRICA ======== */}
+        {mode === 'factory' && (
+          <div className="panel">
+            <p className="section-title">Cargar Archivo Word</p>
+            <div
+              className={`upload-zone ${dragover ? 'dragover' : ''}`}
+              onDragOver={e => { e.preventDefault(); setDragover(true); }}
+              onDragLeave={() => setDragover(false)}
+              onDrop={handleFileDrop}
+              onClick={() => fileInputRef.current.click()}
+            >
+              <div className="upload-icon">📄</div>
+              <div className="upload-text">
+                {wordFile ? `✅ ${wordFile.name}` : 'Arrastra tu archivo Word aquí'}
+              </div>
+              <div className="upload-hint">
+                El Word debe contener las letras separadas por secciones y el estilo de cada canción
+              </div>
+              <input type="file" ref={fileInputRef} accept=".docx,.doc" onChange={handleFileDrop} style={{ display: 'none' }} />
             </div>
 
-            <div className="queue-list">
-              {queue.length === 0 && (
-                <p style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '2rem 0' }}>
-                  La cola está vacía.
-                </p>
-              )}
-              {queue.map(item => (
-                <div key={item.id} className="queue-item">
-                  <div style={{ flex: 1 }}>
-                    <div className="queue-item-header">
-                      <strong>{item.title}</strong>
-                      <span className={`badge badge-${item.status === 'completed' ? 'done' : item.status === 'error' ? 'error' : 'proc'}`}>
-                        {item.engine ? `[${item.engine}] ` : ''}{item.status}
+            {batchQueue.length > 0 && (
+              <>
+                <div className="batch-queue">
+                  {batchQueue.map(item => (
+                    <div key={item.id} className="batch-item">
+                      <span>{item.title}</span>
+                      <span className={`batch-status ${item.status}`}>
+                        {item.status === 'pending' && 'En Cola'}
+                        {item.status === 'processing' && '⚡ Procesando...'}
+                        {item.status === 'done' && '✅ Completado'}
                       </span>
                     </div>
-                    {item.current_section && (
-                      <small style={{ color: 'var(--primary)', fontSize: '0.72rem' }}>↪ {item.current_section}</small>
-                    )}
-                    <div className="progress-bar-bg">
-                      <div className="progress-bar-fill" style={{ width: `${item.percent || 0}%` }}></div>
-                    </div>
-                    <small style={{ color: 'var(--text-muted)', fontSize: '0.7rem' }}>{item.percent || 0}% · ID: {item.id}</small>
-                  </div>
+                  ))}
                 </div>
-              ))}
+                <button
+                  className="generate-btn"
+                  onClick={handleBatchProcess}
+                  disabled={loading || !isOnline}
+                  style={{ marginTop: 20 }}
+                >
+                  {loading
+                    ? <><span className="spin"><SpinIcon /></span> Procesando Lote...</>
+                    : <><LayersIcon /> Iniciar Proceso en Fábrica</>}
+                </button>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* ---- PROGRESO ---- */}
+        {loading && (
+          <div className="progress-container">
+            <div className="progress-label">
+              <span>Generando en la RTX 5080 de Madrid...</span>
+              <span>{Math.round(progress)}%</span>
             </div>
-          </section>
-        </main>
-      )}
-
-      {/* LIBRARY TAB */}
-      {activeTab === 'library' && (
-        <section className="panel library-panel">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
-            <h2>📚 Canciones Generadas</h2>
-            <button className="btn" style={{ padding: '0.5rem 1rem', fontSize: '0.8rem' }} onClick={fetchLibrary}>↻ Actualizar</button>
+            <div className="progress-bar">
+              <div className="progress-fill" style={{ width: `${progress}%` }} />
+            </div>
           </div>
+        )}
 
-          {library.length === 0 && (
-            <p style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '3rem' }}>
-              No hay canciones generadas todavía. Ve al Studio y genera tu primera canción.
-            </p>
-          )}
+        {/* ---- ERROR ---- */}
+        {error && (
+          <div className="result-panel" style={{ borderColor: '#ef4444' }}>
+            <p style={{ color: '#f87171', fontSize: '0.9rem' }}>⚠️ {error}</p>
+          </div>
+        )}
 
-          <div className="library-grid">
-            {library.map(song => (
-              <div key={song.filename} className="library-card">
-                <div className="library-card-icon">🎵</div>
-                <div className="library-card-info">
-                  <strong>{song.filename.replace(/_/g, ' ').replace('.mp3', '')}</strong>
-                  <small>{song.size_mb} MB</small>
-                </div>
-                <div className="library-actions">
-                  <button className="btn" style={{ padding: '0.4rem 0.8rem', fontSize: '0.75rem' }}
-                    onClick={() => window.open(`${API}${song.url}`)}>▶ PLAY</button>
-                  <a href={`${API}${song.url}`} download className="btn" style={{ padding: '0.4rem 0.8rem', fontSize: '0.75rem', background: 'rgba(255,255,255,0.05)' }}>
-                    ↓ DL
-                  </a>
-                </div>
+        {/* ---- RESULTADO ---- */}
+        {result && (
+          <div className="result-panel">
+            <div className="result-header">
+              <div className="result-title">
+                <MusicIcon /> Composición Lista
               </div>
-            ))}
+              <span className="result-meta">Modelo: {model.toUpperCase()}</span>
+            </div>
+            <p style={{ fontSize: '0.85rem', color: 'var(--text-dim)', marginBottom: 16 }}>
+              {result.message}
+            </p>
+            {result.audio_url && (
+              <audio controls className="audio-player" src={result.audio_url}>
+                Tu navegador no soporta audio HTML5.
+              </audio>
+            )}
           </div>
-        </section>
-      )}
-
+        )}
+      </main>
     </div>
-  )
+  );
 }
