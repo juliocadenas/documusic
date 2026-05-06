@@ -1,9 +1,5 @@
-import os
-import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import Optional
 
 app = FastAPI()
 
@@ -15,20 +11,22 @@ app.add_middleware(
 )
 
 @app.get("/")
-def status():
-    return {
-        "status": "DocuMusic Online (Debug Mode)",
-        "gpu": "RTX 5080 Detectada",
-        "message": "Conectividad OK. El 502 debería desaparecer ahora."
-    }
+def home():
+    return {"status": "success", "message": "CONECTADO A MADRID"}
 
+@app.get("/api")
+def api_root():
+    return {"status": "success", "message": "API MADRID OK"}
+
+@app.post("/api/generate")
 @app.post("/generate")
-async def generate(req: dict):
+def generate(req: dict):
     return {
-        "status": "success",
-        "generated_lyrics": "Probando conectividad... Si ves esto, el túnel está perfecto.",
+        "status": "success", 
+        "generated_lyrics": "LA CONEXIÓN FUNCIONA. MADRID ESTÁ VIVO.",
         "audio_url": None
     }
 
 if __name__ == "__main__":
+    import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
