@@ -22,12 +22,15 @@ WORKDIR /app
 RUN pip3 install --upgrade pip
 RUN pip3 install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu128
 
-# Configurar variables para compilar llama-cpp-python específicamente para Blackwell
+# ---- SOLUCIÓN AL ERROR DE COMPILACIÓN ----
+# Configuramos la ruta a los stubs de CUDA para que el compilador encuentre libcuda.so durante el build
+ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64/stubs:${LD_LIBRARY_PATH}
 ENV CMAKE_ARGS="-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=120"
 ENV FORCE_CMAKE=1
 
 # Instalar llama-cpp-python compilando desde fuente con soporte sm_120
-RUN pip3 install llama-cpp-python --no-cache-dir
+# Añadimos LDFLAGS para que encuentre los stubs
+RUN LDFLAGS="-L/usr/local/cuda/lib64/stubs" pip3 install llama-cpp-python --no-cache-dir
 
 # Copiar requerimientos e instalar el resto
 COPY requirements.txt .
