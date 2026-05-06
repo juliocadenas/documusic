@@ -513,3 +513,194 @@ select option { background: var(--surface2); }
   .model-selector { grid-template-columns: 1fr; }
   .mode-tabs { flex-direction: column; }
 }
+
+/* ---- SUNO-STYLE BLOCKS ---- */
+.suno-block {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 24px;
+  margin-bottom: 16px;
+  transition: border-color 0.2s;
+}
+
+.suno-block:focus-within {
+  border-color: var(--accent);
+}
+
+.suno-block-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.suno-block-icon { font-size: 1.1rem; }
+
+.suno-block-title {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.2px;
+}
+
+.suno-block-hint {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  margin-left: auto;
+}
+
+.suno-textarea {
+  width: 100%;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  color: var(--text);
+  font-size: 0.95rem;
+  font-family: 'Inter', sans-serif;
+  line-height: 1.7;
+  resize: vertical;
+}
+
+.suno-textarea:focus {
+  outline: none;
+  border: none;
+  box-shadow: none;
+}
+
+.suno-textarea.style-textarea {
+  font-size: 0.88rem;
+  color: var(--text-dim);
+}
+
+.style-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.style-suggestions .chip {
+  font-size: 0.75rem;
+  padding: 5px 12px;
+  background: rgba(124,58,237,0.08);
+  border-color: rgba(124,58,237,0.2);
+  color: #a78bfa;
+}
+
+.style-suggestions .chip:hover {
+  background: rgba(124,58,237,0.2);
+  border-color: var(--accent);
+}
+
+/* ---- AUDIO CARD ---- */
+.audio-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 20px;
+  margin-top: 16px;
+}
+
+/* ---- DOWNLOAD BUTTON ---- */
+.download-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 12px;
+  padding: 10px 20px;
+  background: rgba(16,185,129,0.12);
+  border: 1px solid rgba(16,185,129,0.3);
+  border-radius: 100px;
+  color: #6ee7b7;
+  font-size: 0.82rem;
+  font-weight: 600;
+  text-decoration: none;
+  transition: all 0.2s;
+}
+
+.download-btn:hover {
+  background: rgba(16,185,129,0.2);
+  border-color: var(--accent3);
+}
+
+/* ---- ERROR PANEL ---- */
+.error-panel {
+  background: rgba(239,68,68,0.08);
+  border: 1px solid rgba(239,68,68,0.25);
+  border-radius: 14px;
+  padding: 16px 20px;
+  font-size: 0.88rem;
+  color: #f87171;
+  margin-top: 12px;
+}
+
+/* ---- PENDING AUDIO ---- */
+.pending-audio {
+  background: rgba(124,58,237,0.06);
+  border: 1px dashed rgba(124,58,237,0.3);
+  border-radius: 14px;
+  padding: 20px;
+  font-size: 0.85rem;
+  color: #a78bfa;
+  line-height: 1.8;
+  margin-top: 16px;
+}
+
+.pending-audio code {
+  display: block;
+  margin-top: 10px;
+  background: var(--bg);
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  word-break: break-all;
+}
+
+/* ---- STATUS INDICATOR ---- */
+.status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-dim);
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--danger);
+  animation: pulse 2s infinite;
+  flex-shrink: 0;
+}
+
+.status-indicator.active .status-dot { background: var(--accent3); }
+
+/* ---- RESULT LABEL ---- */
+.result-label {
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  color: var(--accent);
+  margin-bottom: 8px;
+}
+
+.lyrics-box {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  font-size: 0.85rem;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  font-family: 'Inter', monospace;
+  max-height: 250px;
+  overflow-y: auto;
+  line-height: 1.7;
+}
+

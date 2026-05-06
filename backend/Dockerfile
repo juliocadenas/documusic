@@ -1,41 +1,52 @@
 FROM nvidia/cuda:12.8.0-devel-ubuntu22.04
 
-# Evitar prompts interactivos
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Instalar dependencias del sistema
+# Dependencias del sistema
 RUN apt-get update && apt-get install -y \
-    python3-pip python3-dev ffmpeg git cmake ninja-build build-essential libopenblas-dev \
+    python3-pip python3-dev ffmpeg git cmake ninja-build build-essential \
+    libopenblas-dev libsndfile1 sox wget curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Actualizar pip e instalar PyTorch Nightly
+# Actualizar pip
 RUN pip3 install --upgrade pip
-RUN pip3 install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu128
 
-# ---- LA OPCIÓN NUCLEAR PARA RTX 5080 (Blackwell) ----
+# PyTorch Nightly con soporte CUDA 12.8 (RTX 5080 Blackwell)
+RUN pip3 install --pre torch torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
 
-# 1. Engañamos al sistema copiando el stub de CUDA a la carpeta de librerías del sistema
-# Esto evita que el linker falle al no encontrar libcuda.so.1 durante el build de Docker
-RUN cp /usr/local/cuda/lib64/stubs/libcuda.so /usr/lib/x86_64-linux-gnu/libcuda.so.1
+# Dependencias de YuE (motor de música con voces)
+RUN pip3 install \
+    transformers==4.46.3 \
+    accelerate \
+    sentencepiece \
+    einops \
+    encodec \
+    soundfile \
+    scipy \
+    numpy \
+    omegaconf
 
-# 2. Configuración de compilación optimizada para sm_120
-ENV CMAKE_ARGS="-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=120 -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF"
-ENV FORCE_CMAKE=1
+# Clonar el repositorio oficial de YuE
+RUN git clone https://github.com/multimodal-art-projection/YuE.git /app/YuE
 
-# 3. Instalación de llama-cpp-python
-RUN pip3 install llama-cpp-python --no-cache-dir
+# Instalar dependencias adicionales de YuE
+RUN cd /app/YuE && pip3 install -r requirements.txt || true
 
-# 4. Limpiamos el "engaño" para que el contenedor use el driver real al arrancar
-RUN rm /usr/lib/x86_64-linux-gnu/libcuda.so.1
+# API Framework
+RUN pip3 install fastapi uvicorn httpx python-multipart
 
-# Resto de la instalación
-COPY requirements.txt .
-RUN pip3 install --no-cache-dir -r requirements.txt
-RUN pip3 install --no-cache-dir bitsandbytes accelerate
+# Opción Nuclear: stub para llama-cpp (si se necesita en el futuro)
+RUN cp /usr/local/cuda/lib64/stubs/libcuda.so /usr/lib/x86_64-linux-gnu/libcuda.so.1 && \
+    pip3 install llama-cpp-python --no-cache-dir || echo "llama-cpp optional, skipping" && \
+    rm -f /usr/lib/x86_64-linux-gnu/libcuda.so.1
 
+# Copiar código del backend
 COPY . .
+
+# Crear carpetas necesarias
+RUN mkdir -p /app/outputs /app/tmp
 
 EXPOSE 8000
 
