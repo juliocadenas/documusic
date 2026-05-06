@@ -3,7 +3,7 @@ FROM nvidia/cuda:12.8.0-devel-ubuntu22.04
 # Evitar prompts interactivos
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Instalar dependencias del sistema y herramientas de compilación
+# Instalar dependencias del sistema
 RUN apt-get update && apt-get install -y \
     python3-pip python3-dev ffmpeg git cmake ninja-build build-essential libopenblas-dev \
     && rm -rf /var/lib/apt/lists/*
@@ -14,23 +14,21 @@ WORKDIR /app
 RUN pip3 install --upgrade pip
 RUN pip3 install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu128
 
-# ---- CONFIGURACIÓN AVANZADA PARA RTX 5080 (Blackwell) ----
+# ---- LA OPCIÓN NUCLEAR PARA RTX 5080 (Blackwell) ----
 
-# 1. Crear enlace simbólico para libcuda.so.1 (la "librería fantasma")
-RUN ln -s /usr/local/cuda/lib64/stubs/libcuda.so /usr/local/cuda/lib64/stubs/libcuda.so.1
+# 1. Engañamos al sistema copiando el stub de CUDA a la carpeta de librerías del sistema
+# Esto evita que el linker falle al no encontrar libcuda.so.1 durante el build de Docker
+RUN cp /usr/local/cuda/lib64/stubs/libcuda.so /usr/lib/x86_64-linux-gnu/libcuda.so.1
 
-# 2. Configurar variables de entorno para la compilación
-ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64/stubs:${LD_LIBRARY_PATH}
-ENV CMAKE_ARGS="-DGGML_CUDA=on \
-                -DCMAKE_CUDA_ARCHITECTURES=120 \
-                -DCMAKE_LIBRARY_PATH=/usr/local/cuda/lib64/stubs \
-                -DLLAMA_BUILD_TESTS=OFF \
-                -DLLAMA_BUILD_EXAMPLES=OFF"
+# 2. Configuración de compilación optimizada para sm_120
+ENV CMAKE_ARGS="-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=120 -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF"
 ENV FORCE_CMAKE=1
 
-# 3. Instalar llama-cpp-python con las rutas de enlace forzadas
-RUN LDFLAGS="-L/usr/local/cuda/lib64/stubs -Wl,-rpath-link,/usr/local/cuda/lib64/stubs" \
-    pip3 install llama-cpp-python --no-cache-dir
+# 3. Instalación de llama-cpp-python
+RUN pip3 install llama-cpp-python --no-cache-dir
+
+# 4. Limpiamos el "engaño" para que el contenedor use el driver real al arrancar
+RUN rm /usr/lib/x86_64-linux-gnu/libcuda.so.1
 
 # Resto de la instalación
 COPY requirements.txt .
