@@ -2,6 +2,28 @@ import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import './App.css';
 
+// ---- LOADING OVERLAY ----
+const LoadingOverlay = ({ model, mode }) => {
+  const modeLabels = { creative: 'Modo Creativo', exact: 'Letra Exacta', factory: 'Fábrica' };
+  return (
+    <div className="loading-overlay">
+      <div className="waveform">
+        {[...Array(8)].map((_, i) => <span key={i} />)}
+      </div>
+      <div className="loading-overlay-title">Generando con {model === 'yue' ? 'YuE 7B' : 'ACE-Step 1.5'}...</div>
+      <div className="loading-overlay-sub">
+        Modalidad: {modeLabels[mode]}<br />
+        La RTX 5080 de Madrid está procesando tu solicitud.
+      </div>
+    </div>
+  );
+};
+
+// ---- TOAST ----
+const Toast = ({ msg, type }) => (
+  <div className={`toast ${type}`}>{msg}</div>
+);
+
 // ---- ICONOS INLINE (sin dependencias extra) ----
 const Icon = ({ d, size = 18 }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
@@ -63,6 +85,12 @@ export default function App() {
   const [progress, setProgress] = useState(0);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
+  const [toast, setToast] = useState(null);
+
+  const showToast = (msg, type = 'success', duration = 4000) => {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), duration);
+  };
 
   // Consultar estado del servidor via proxy de Vite
   useEffect(() => {
@@ -85,6 +113,7 @@ export default function App() {
 
     try {
       let payload = { model };
+      showToast('⚡ Enviando a Madrid...', 'success', 3000);
 
       if (mode === 'creative') {
         payload = { ...payload, mode: 'creative', prompt: idea, style, genre };
@@ -95,8 +124,10 @@ export default function App() {
       const res = await axios.post('/api/generate', payload);
       setProgress(100);
       setResult(res.data);
+      showToast('✅ ¡Composición lista!', 'success');
     } catch (e) {
       setError('Error al conectar con el servidor de Madrid. Verifica que el contenedor esté activo.');
+      showToast('❌ Error de conexión con Madrid', 'error');
     } finally {
       clearInterval(interval);
       setLoading(false);
@@ -136,6 +167,12 @@ export default function App() {
 
   return (
     <div className="app">
+      {/* ---- LOADING OVERLAY ---- */}
+      {loading && <LoadingOverlay model={model} mode={mode} />}
+
+      {/* ---- TOAST ---- */}
+      {toast && <Toast msg={toast.msg} type={toast.type} />}
+
       {/* ---- HEADER ---- */}
       <header>
         <div className="logo">
@@ -315,17 +352,43 @@ export default function App() {
           <div className="result-panel">
             <div className="result-header">
               <div className="result-title">
-                <MusicIcon /> Composición Lista
+                <MusicIcon /> {result.status === 'success' ? 'Proceso Completado' : 'En Cola'}
               </div>
-              <span className="result-meta">Modelo: {model.toUpperCase()}</span>
+              <span className="result-meta">Modelo: {(result.model_used || model).toUpperCase()}</span>
             </div>
-            <p style={{ fontSize: '0.85rem', color: 'var(--text-dim)', marginBottom: 16 }}>
-              {result.message}
-            </p>
-            {result.audio_url && (
-              <audio controls className="audio-player" src={result.audio_url}>
+
+            {/* Letra generada (modo creativo) */}
+            {result.generated_lyrics && (
+              <div style={{ marginBottom: 20 }}>
+                <p style={{ fontSize: '0.7rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--accent)', marginBottom: 8 }}>
+                  Letra Generada por IA
+                </p>
+                <pre style={{
+                  background: 'var(--bg)', border: '1px solid var(--border)',
+                  borderRadius: 12, padding: 16, fontSize: '0.85rem',
+                  color: 'var(--text-dim)', whiteSpace: 'pre-wrap',
+                  fontFamily: 'monospace', maxHeight: 250, overflowY: 'auto'
+                }}>
+                  {result.generated_lyrics}
+                </pre>
+              </div>
+            )}
+
+            {/* Audio o aviso de modelo pendiente */}
+            {result.audio_url ? (
+              <audio controls className="audio-player" src={`/api${result.audio_url}`}>
                 Tu navegador no soporta audio HTML5.
               </audio>
+            ) : (
+              <div style={{
+                background: 'rgba(124,58,237,0.08)', border: '1px dashed var(--accent)',
+                borderRadius: 12, padding: 16, fontSize: '0.82rem', color: '#a78bfa', lineHeight: 1.7
+              }}>
+                🎵 <strong>Audio en preparación:</strong> El modelo YuE necesita descargarse en el servidor de Madrid.<br />
+                Ejecuta en Madrid: <code style={{ background: 'var(--bg)', padding: '2px 8px', borderRadius: 6 }}>
+                  huggingface-cli download mradermacher/YuE-7B-GGUF YuE-7B.Q4_K_M.gguf --local-dir ~/AI_MODELS/huggingface/YuE-7B
+                </code>
+              </div>
             )}
           </div>
         )}
