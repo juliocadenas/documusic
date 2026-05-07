@@ -2,10 +2,11 @@ FROM nvidia/cuda:12.8.0-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Dependencias del sistema
+# Dependencias del sistema (incluido git-lfs para el repo de YuE)
 RUN apt-get update && apt-get install -y \
-    python3-pip python3-dev ffmpeg git cmake ninja-build build-essential \
+    python3-pip python3-dev ffmpeg git git-lfs cmake ninja-build build-essential \
     libopenblas-dev libsndfile1 sox wget curl \
+    && git lfs install \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -29,7 +30,9 @@ RUN pip3 install \
     omegaconf
 
 # Clonar el repositorio oficial de YuE en /opt para que el volumen no lo sobreescriba
-RUN git clone https://github.com/multimodal-art-projection/YuE.git /opt/YuE
+# git lfs pull descarga los archivos de código del codec (xcodec_mini_infer/models/)
+RUN git clone https://github.com/multimodal-art-projection/YuE.git /opt/YuE && \
+    cd /opt/YuE && git lfs pull
 
 # Instalar dependencias adicionales de YuE
 RUN cd /opt/YuE && pip3 install -r requirements.txt || true
