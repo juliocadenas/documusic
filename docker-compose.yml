@@ -1,40 +1,47 @@
 version: '3.8'
 
 services:
-  documusic-api:
+  documusic_backend:
     build: ./backend
     container_name: documusic_backend
-    restart: always
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              count: 1
               capabilities: [gpu]
     ports:
       - "8000:8000"
     volumes:
       - ./backend:/app
-      - ~/AI_MODELS/huggingface:/app/models # Hub centralizado de modelos
+      - /home/pepe/AI_MODELS/YuE:/app/models
+      - /home/pepe/documusic/outputs:/app/outputs
     environment:
-      - CUDA_VISIBLE_DEVICES=0
-      - PYTHONUNBUFFERED=1
-
-  ollama:
-    image: ollama/ollama
-    container_name: ollama_hub
+      - NVIDIA_VISIBLE_DEVICES=all
+    networks:
+      - documusic_net
     restart: always
+
+  ollama_hub:
+    image: ollama/ollama:latest
+    container_name: ollama_hub
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              count: 1
               capabilities: [gpu]
-    ports:
-      - "11434:11434"
     volumes:
-      - ~/AI_MODELS/ollama:/root/.ollama
-    environment:
-      - OLLAMA_FLASH_ATTENTION=0
+      - ollama_data:/root/.ollama
+    networks:
+      - documusic_net
+    restart: always
+
+networks:
+  documusic_net:
+    driver: bridge
+
+volumes:
+  ollama_data:
