@@ -29,10 +29,9 @@ RUN pip3 install \
     numpy \
     omegaconf
 
-# Clonar el repositorio oficial de YuE en /opt para que el volumen no lo sobreescriba
-# git lfs pull descarga los archivos de código del codec (xcodec_mini_infer/models/)
-RUN git clone https://github.com/multimodal-art-projection/YuE.git /opt/YuE && \
-    cd /opt/YuE && git lfs pull
+# Clonar YuE con --recurse-submodules para obtener xcodec_mini_infer/models/
+# (xcodec_mini_infer es un submódulo de Git, no se descarga con clone simple)
+RUN git clone --recurse-submodules https://github.com/multimodal-art-projection/YuE.git /opt/YuE
 
 # Instalar dependencias adicionales de YuE
 RUN cd /opt/YuE && pip3 install -r requirements.txt || true
