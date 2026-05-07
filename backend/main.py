@@ -151,7 +151,7 @@ def run_yue_inference(job_id: str, lyrics: str, style_prompt: str, yue_script: s
             cmd,
             capture_output=True,
             text=True,
-            timeout=600,
+            timeout=1800,  # Aumentado a 30 minutos para modelos de 7B
             cwd=yue_inference_dir,
             env=env
         )

@@ -4,6 +4,7 @@ services:
   documusic_backend:
     build: ./backend
     container_name: documusic_backend
+    init: true
     deploy:
       resources:
         reservations:
