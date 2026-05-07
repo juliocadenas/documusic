@@ -135,7 +135,7 @@ def run_yue_inference(job_id: str, lyrics: str, style_prompt: str, yue_script: s
             "--lyrics_txt", f"{tmp_dir}/lyrics.txt",
             "--output_dir", output_path,
             "--cuda_idx", "0",
-            "--max_new_tokens", "3000",
+            "--max_new_tokens", "1500",  # Reducido de 3000 para no agotar la VRAM de la RTX 5080
         ]
 
         print(f"[YuE] 🚀 Ejecutando desde {yue_inference_dir}: {' '.join(cmd)}")
