@@ -111,8 +111,11 @@ def run_yue_inference(job_id: str, lyrics: str, style_prompt: str, yue_script: s
         output_path = f"{OUTPUT_DIR}/{job_id}"
         os.makedirs(output_path, exist_ok=True)
 
+        # Directorio del script de inferencia (necesario para rutas relativas del tokenizer y codec)
+        yue_inference_dir = "/opt/YuE/inference"
+
         cmd = [
-            "python3", yue_script,
+            "python3", "infer.py",
             "--stage1_model", f"{MODELS_DIR}/YuE-s1",
             "--stage2_model", f"{MODELS_DIR}/YuE-s2",
             "--genre_txt", f"{tmp_dir}/style.txt",
@@ -122,8 +125,14 @@ def run_yue_inference(job_id: str, lyrics: str, style_prompt: str, yue_script: s
             "--max_new_tokens", "3000",
         ]
 
-        print(f"[YuE] 🚀 Ejecutando: {' '.join(cmd)}")
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        print(f"[YuE] 🚀 Ejecutando desde {yue_inference_dir}: {' '.join(cmd)}")
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=600,
+            cwd=yue_inference_dir  # ← CLAVE: ejecutar desde el directorio de inferencia
+        )
 
         if result.returncode == 0:
             wav_files = glob.glob(f"{output_path}/**/*.wav", recursive=True)
