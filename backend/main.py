@@ -103,8 +103,21 @@ def run_yue_inference(job_id: str, lyrics: str, style_prompt: str, yue_script: s
         tmp_dir = f"/app/tmp/{job_id}"
         os.makedirs(tmp_dir, exist_ok=True)
 
+        # YuE requiere que las letras tengan section markers [verse]/[chorus]
+        # Si no los tienen, los añadimos automáticamente
+        formatted_lyrics = lyrics.strip()
+        has_sections = any(tag in formatted_lyrics.lower() for tag in ['[verse]', '[chorus]', '[bridge]', '[intro]', '[outro]'])
+        if not has_sections:
+            lines = [l.strip() for l in formatted_lyrics.split('\n') if l.strip()]
+            formatted_lyrics = ''
+            section_tags = ['[verse]', '[chorus]', '[verse]', '[chorus]', '[bridge]', '[outro]']
+            for idx, chunk_start in enumerate(range(0, len(lines), 4)):
+                chunk = lines[chunk_start:chunk_start + 4]
+                tag = section_tags[idx] if idx < len(section_tags) else '[verse]'
+                formatted_lyrics += tag + '\n' + '\n'.join(chunk) + '\n\n'
+
         with open(f"{tmp_dir}/lyrics.txt", "w") as f:
-            f.write(lyrics)
+            f.write(formatted_lyrics.strip())
         with open(f"{tmp_dir}/style.txt", "w") as f:
             f.write(style_prompt)
 
