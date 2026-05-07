@@ -126,12 +126,18 @@ def run_yue_inference(job_id: str, lyrics: str, style_prompt: str, yue_script: s
         ]
 
         print(f"[YuE] 🚀 Ejecutando desde {yue_inference_dir}: {' '.join(cmd)}")
+        
+        # PYTHONPATH necesario para que infer.py encuentre el módulo 'models' dentro de xcodec_mini_infer
+        env = os.environ.copy()
+        env["PYTHONPATH"] = f"{yue_inference_dir}/xcodec_mini_infer:{yue_inference_dir}"
+        
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
             timeout=600,
-            cwd=yue_inference_dir  # ← CLAVE: ejecutar desde el directorio de inferencia
+            cwd=yue_inference_dir,
+            env=env
         )
 
         if result.returncode == 0:
