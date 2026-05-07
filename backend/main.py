@@ -144,6 +144,9 @@ def run_yue_inference(job_id: str, lyrics: str, style_prompt: str, yue_script: s
         env = os.environ.copy()
         env["PYTHONPATH"] = f"{yue_inference_dir}/xcodec_mini_infer:{yue_inference_dir}"
         
+        # Evitar fragmentación de memoria (OOM) en la RTX 5080 (16GB VRAM)
+        env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+        
         result = subprocess.run(
             cmd,
             capture_output=True,
