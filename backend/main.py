@@ -20,7 +20,7 @@ app.add_middleware(
 )
 
 OUTPUT_DIR = "/app/outputs"
-YUE_DIR = "/app/YuE"
+YUE_DIR = "/opt/YuE"
 MODELS_DIR = "/app/models"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs("/app/tmp", exist_ok=True)
@@ -32,13 +32,11 @@ jobs = {}
 def find_yue_script():
     """Busca el script de inferencia de YuE en todas las ubicaciones posibles."""
     candidates = [
-        "/app/YuE/infer.py",
-        "/app/YuE/inference/infer.py",
-        "/app/YuE/src/infer.py",
-        "/app/YuE/yue/infer.py",
+        "/opt/YuE/infer.py",
+        "/opt/YuE/inference/infer.py",
+        "/opt/YuE/src/infer.py",
     ]
-    # Búsqueda dinámica
-    found = glob.glob("/app/YuE/**/infer.py", recursive=True)
+    found = glob.glob("/opt/YuE/**/infer.py", recursive=True)
     candidates += found
     
     for path in candidates:

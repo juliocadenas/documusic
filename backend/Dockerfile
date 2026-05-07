@@ -28,11 +28,11 @@ RUN pip3 install \
     numpy \
     omegaconf
 
-# Clonar el repositorio oficial de YuE
-RUN git clone https://github.com/multimodal-art-projection/YuE.git /app/YuE
+# Clonar el repositorio oficial de YuE en /opt para que el volumen no lo sobreescriba
+RUN git clone https://github.com/multimodal-art-projection/YuE.git /opt/YuE
 
 # Instalar dependencias adicionales de YuE
-RUN cd /app/YuE && pip3 install -r requirements.txt || true
+RUN cd /opt/YuE && pip3 install -r requirements.txt || true
 
 # API Framework
 RUN pip3 install fastapi uvicorn httpx python-multipart
