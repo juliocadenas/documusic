@@ -3,7 +3,7 @@
 Este documento sirve como contexto maestro para agentes de IA. Describe la arquitectura, ubicación de modelos y flujos de trabajo del servidor de producción.
 
 ## 🖥️ Servidor: Madrid (Pop!_OS)
-- **IP Tailscale:** `100.65.182.25`
+- **IP Tailscale:** `100.103.141.33`
 - **Hardware:** NVIDIA GeForce RTX 5080 (16GB VRAM)
 - **SO:** Linux Pop!_OS 22.04 LTS
 - **Entorno:** Docker + NVIDIA Container Toolkit (CUDA 12.1)
@@ -47,7 +47,7 @@ Para conectar un frontend local (Venezuela) con el backend de Madrid sin errores
 2. Configurar **Vite Proxy** en `vite.config.js`:
    ```javascript
    server: {
-     proxy: { '/api': 'http://100.65.182.25:8000' }
+     proxy: { '/api': 'http://100.103.141.33:8000' }
    }
    ```
 3. En el frontend, usar rutas relativas: `axios.get('/api/status')`.

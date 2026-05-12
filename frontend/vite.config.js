@@ -1,7 +1,7 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
-// https://vite.dev/config/
+// https://vitejs.dev/config/
 export default defineConfig({
   plugins: [react()],
   server: {
@@ -9,8 +9,9 @@ export default defineConfig({
       '/api': {
         target: 'http://100.65.182.25:8000',
         changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api/, ''),
-      }
-    }
-  }
+        secure: false,
+        rewrite: (path) => path.replace(/^\/api/, '/api'), // Aseguramos que mantenga el prefijo /api
+      },
+    },
+  },
 })

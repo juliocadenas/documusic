@@ -1,0 +1,194 @@
+import os
+import glob
+import uuid
+import subprocess
+import threading
+import re
+import uvicorn
+from fastapi import FastAPI, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+
+app = FastAPI()
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+OUTPUT_DIR = "/app/outputs"
+MODELS_DIR = "/app/models"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+os.makedirs("/app/tmp", exist_ok=True)
+
+app.mount("/api/outputs", StaticFiles(directory=OUTPUT_DIR), name="outputs")
+jobs = {}
+
+@app.get("/")
+@app.get("/api")
+def status():
+    return {"status": "Online", "gpu": "RTX 5080", "yue_ready": True}
+
+@app.post("/api/generate")
+async def generate(req: dict, background_tasks: BackgroundTasks):
+    lyrics = req.get("lyrics", "")
+    style_prompt = req.get("style_prompt", "pop")
+    
+    # Suno AI-like automatic prompt enhancer
+    base_style = style_prompt.lower()
+    if len(base_style) < 50 or not any(word in base_style for word in ['vocals', 'studio', 'recording', 'guitar', 'piano', 'drums', 'bass', 'instrument']):
+        style_prompt = f"{style_prompt.strip()}, professional studio recording, high quality audio, clear lead vocals, rich instrumentation, catchy melody, masterpiece"
+        
+    job_id = str(uuid.uuid4())[:8]
+    jobs[job_id] = {"status": "processing", "logs": ["Iniciando motor YuE 7B..."]}
+    background_tasks.add_task(run_yue_inference, job_id, lyrics, style_prompt)
+    # CRITICO: model_status="generating" activa el polling en el frontend
+    return {"status": "success", "job_id": job_id, "model_status": "generating"}
+
+def run_yue_inference(job_id: str, lyrics: str, style_prompt: str):
+    try:
+        # --- FIX: VALIDACION ESTRICTA DE GPU ---
+        import subprocess
+        try:
+            subprocess.run(["nvidia-smi"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            jobs[job_id]["logs"].append("Validacion OK: GPU RTX 5080 detectada y activa.")
+        except Exception:
+            jobs[job_id]["logs"].append("ERROR: No se detecto GPU. Cancelando para evitar uso de CPU.")
+            jobs[job_id].update({"status": "error", "error": "GPU inactiva. Cancelado para evitar horas de procesamiento CPU."})
+            return
+
+        tmp_dir = f"/app/tmp/{job_id}"
+        os.makedirs(tmp_dir, exist_ok=True)
+
+        # --- FIX CRITICO: Formateo correcto de letras para YuE ---
+        formatted_lyrics = lyrics.strip()
+
+        # 1. Eliminar tags no estandar como [Repeticion final], [Final], etc.
+        formatted_lyrics = re.sub(
+            r'\[(?!verse\b|chorus\b|bridge\b|intro\b|outro\b)[^\]]+\]',
+            '', formatted_lyrics, flags=re.IGNORECASE
+        ).strip()
+
+        # 2. Verificar secciones validas YuE
+        has_sections = any(
+            tag in formatted_lyrics.lower()
+            for tag in ['[verse]', '[chorus]', '[bridge]', '[intro]', '[outro]']
+        )
+
+        if not has_sections:
+            # Crear MINIMO 2 secciones - sin esto Stage1 genera 0it
+            lines = [l.strip() for l in formatted_lyrics.split('\n') if l.strip()]
+            if not lines:
+                lines = ['Docuplay music platform', 'Learning through music']
+            mid = max(1, len(lines) // 2)
+            verse = '\n'.join(lines[:mid])
+            chorus = '\n'.join(lines[mid:] if len(lines) > mid else lines[:mid])
+            formatted_lyrics = f"[verse]\n{verse}\n\n[chorus]\n{chorus}\n\n"
+
+        jobs[job_id]["logs"].append(f"Letras listas: {len(formatted_lyrics)} chars, 2+ secciones")
+
+        l_path = f"{tmp_dir}/lyrics.txt"
+        s_path = f"{tmp_dir}/style.txt"
+        with open(l_path, "w") as f:
+            f.write(formatted_lyrics)
+        with open(s_path, "w") as f:
+            f.write(style_prompt)
+
+        output_path = f"{OUTPUT_DIR}/{job_id}"
+        os.makedirs(output_path, exist_ok=True)
+
+        yue_inference_dir = "/opt/YuE/inference"
+        config_path = f"{yue_inference_dir}/xcodec_mini_infer/final_ckpt/config.yaml"
+        ckpt_path = f"{yue_inference_dir}/xcodec_mini_infer/final_ckpt/ckpt_00360000.pth"
+
+        cmd = [
+            "python3", "-u", "infer.py",
+            "--stage1_model", f"{MODELS_DIR}/YuE-s1",
+            "--stage2_model", f"{MODELS_DIR}/YuE-s2",
+            "--genre_txt", s_path,
+            "--lyrics_txt", l_path,
+            "--output_dir", output_path,
+            "--cuda_idx", "0",
+            "--max_new_tokens", "2000",
+            "--run_n_segments", "2",
+            "--basic_model_config", config_path,
+            "--resume_path", ckpt_path,
+            # No pasamos --disable_offload_model porque mi parche en infer.py 
+            # ya maneja la liberacion de VRAM de forma segura para la 5080.
+        ]
+
+        env = os.environ.copy()
+        env["PYTHONPATH"] = (
+            f"{yue_inference_dir}:{yue_inference_dir}/xcodec_mini_infer:"
+            f"{yue_inference_dir}/xcodec_mini_infer/models:{yue_inference_dir}/vocos"
+        )
+        env["ATTENTION_IMPLEMENTATION"] = "sdpa"
+        env["USE_FLASH_ATTN"] = "0" 
+        env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+        env["PYTHONUNBUFFERED"] = "1"
+
+        jobs[job_id]["logs"].append("Lanzando proceso en GPU RTX 5080...")
+
+        def capture_logs(process, job_id, output_path):
+            try:
+                for line in process.stdout:
+                    clean = line.strip()
+                    if clean:
+                        print(f"[{job_id}] {clean}", flush=True)
+                        jobs[job_id]["logs"].append(clean)
+
+                process.wait()
+                if process.returncode == 0:
+                    jobs[job_id]["logs"].append("Buscando audio generado...")
+                    # YuE ahora exporta directamente a MP3, buscar ambos formatos por si acaso
+                    audios = glob.glob(f"{output_path}/**/*.mp3", recursive=True) + glob.glob(f"{output_path}/**/*.wav", recursive=True)
+                    
+                    if audios:
+                        import shutil
+                        mp3_path = f"{OUTPUT_DIR}/{job_id}.mp3"
+                        
+                        if audios[0].endswith(".wav"):
+                            subprocess.run(["ffmpeg", "-y", "-i", audios[0], "-b:a", "192k", mp3_path], check=True)
+                        else:
+                            shutil.copy(audios[0], mp3_path)
+                            
+                        jobs[job_id].update({
+                            "status": "done",
+                            "audio_url": f"/outputs/{job_id}.mp3"
+                        })
+                        jobs[job_id]["logs"].append("Cancion lista!")
+                    else:
+                        jobs[job_id].update({"status": "error", "error": "No se encontro el audio generado"})
+                else:
+                    jobs[job_id].update({
+                        "status": "error",
+                        "error": f"Proceso fallo con codigo {process.returncode}"
+                    })
+            except Exception as e:
+                print(f"Error en hilo: {e}", flush=True)
+                jobs[job_id].update({"status": "error", "error": str(e)})
+
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            cwd=yue_inference_dir,
+            env=env,
+            bufsize=1,
+            universal_newlines=True
+        )
+
+        t = threading.Thread(target=capture_logs, args=(process, job_id, output_path))
+        t.daemon = True
+        t.start()
+
+    except Exception as e:
+        print(f"[YuE] Error critico: {e}", flush=True)
+        jobs[job_id].update({"status": "error", "error": str(e)})
+
+@app.get("/api/job/{job_id}")
+def get_job(job_id: str):
+    job = jobs.get(job_id)
+    if not job:
+        return {"status": "error", "error": "El servidor se reinició por protección de la GPU (Crash). Por favor, intenta de nuevo."}
+    return job
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)

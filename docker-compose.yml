@@ -16,10 +16,13 @@ services:
       - "8000:8000"
     volumes:
       - ./backend:/app
-      - /home/pepe/AI_MODELS/YuE:/app/models
-      - /home/pepe/documusic/outputs:/app/outputs
+      # Modelos centralizados en el Hub
+      - /home/pepe/AI_MODELS/huggingface:/app/models
+      # Outputs persistentes
+      - ./outputs:/app/outputs
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
+      - PYTHONUNBUFFERED=1
     networks:
       - documusic_net
     restart: always
@@ -35,7 +38,8 @@ services:
               count: 1
               capabilities: [gpu]
     volumes:
-      - ollama_data:/root/.ollama
+      # Mapeo directo al Hub Central de Ollama
+      - /home/pepe/AI_MODELS/ollama:/root/.ollama
     networks:
       - documusic_net
     restart: always
@@ -43,6 +47,3 @@ services:
 networks:
   documusic_net:
     driver: bridge
-
-volumes:
-  ollama_data:
