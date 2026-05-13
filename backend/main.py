@@ -39,65 +39,59 @@ app.mount("/api/outputs", StaticFiles(directory=OUTPUT_DIR), name="outputs")
 def _ensure_models_available():
     """
     Garantiza que el paquete 'models' sea importable.
-    El submódulo xcodec_mini_infer puede estar vacío si --recurse-submodules falló.
+    Descarga xcodec_mini_infer desde GitHub si el submódulo está vacío.
+    Funciona en caliente — no requiere rebuild de Docker.
     """
-    # 1. Intentar inicializar submódulos de Git si están vacíos
     xcodec_in_inference = f"{YUE_DIR}/inference/xcodec_mini_infer"
     xcodec_at_root = f"{YUE_DIR}/xcodec_mini_infer"
+    xcodec_url = "https://github.com/multimodal-art-projection/xcodec_mini_infer.git"
 
-    for xcodec_path in [xcodec_at_root, xcodec_in_inference]:
-        if os.path.isdir(xcodec_path):
-            contents = os.listdir(xcodec_path)
-            logger.info(f"[Startup] Contenido de {xcodec_path}: {contents}")
-            if not contents or (len(contents) <= 2 and '.git' in contents):
-                logger.info(f"[Startup] ⚠️ Submódulo vacío detectado en {xcodec_path}, inicializando...")
-                try:
-                    result = subprocess.run(
-                        ["git", "submodule", "update", "--init", "--recursive"],
-                        cwd=os.path.dirname(xcodec_path),
-                        capture_output=True, text=True, timeout=120
-                    )
-                    logger.info(f"[Startup] git submodule stdout: {result.stdout}")
-                    if result.stderr:
-                        logger.info(f"[Startup] git submodule stderr: {result.stderr}")
-                    # Verificar de nuevo
-                    new_contents = os.listdir(xcodec_path)
-                    logger.info(f"[Startup] Después de init: {new_contents}")
-                except Exception as e:
-                    logger.error(f"[Startup] ❌ Error inicializando submódulo: {e}")
+    # 1. Verificar si models/ ya existe en alguna ubicación
+    for xcodec_path in [xcodec_in_inference, xcodec_at_root]:
+        models_dir = f"{xcodec_path}/models"
+        if os.path.isdir(models_dir) and os.listdir(models_dir):
+            logger.info(f"[Startup] ✅ models/ ya existe en {models_dir}")
+            return
 
-    # 2. Buscar models/ en cualquier parte bajo /opt/YuE
-    candidates = glob.glob(f"{YUE_DIR}/**/models", recursive=True)
-    candidates = [c for c in candidates if os.path.isdir(c) and '__pycache__' not in c]
-    logger.info(f"[Startup] Directorios 'models/' encontrados: {candidates}")
+    # 2. El submódulo está vacío — clonar xcodec_mini_infer directamente
+    logger.info(f"[Startup] ⚠️ xcodec_mini_infer vacío, clonando desde GitHub...")
 
-    # 3. Crear symlink /opt/YuE/models → donde esté models/
-    models_target = f"{YUE_DIR}/models"
-
-    if os.path.isdir(models_target) or os.path.islink(models_target):
-        logger.info(f"[Startup] models/ ya resuelto en {models_target}")
-        return
-
-    if not candidates:
-        logger.error(f"[Startup] ❌ No se encontró ningún directorio 'models/' bajo {YUE_DIR}")
-        logger.info(f"[Startup] Contenido de {YUE_DIR}: {os.listdir(YUE_DIR) if os.path.isdir(YUE_DIR) else 'NO EXISTE'}")
-        logger.info(f"[Startup] Contenido de inference/: {os.listdir(f'{YUE_DIR}/inference') if os.path.isdir(f'{YUE_DIR}/inference') else 'NO EXISTE'}")
-        return
-
-    # Preferir xcodec_mini_infer/models
-    source = None
-    for c in candidates:
-        if 'xcodec_mini_infer' in c:
-            source = c
-            break
-    if not source:
-        source = candidates[0]
+    # Intentar en /opt/YuE/inference/xcodec_mini_infer primero
+    target_path = xcodec_in_inference if os.path.isdir(f"{YUE_DIR}/inference") else xcodec_at_root
 
     try:
-        os.symlink(source, models_target)
-        logger.info(f"[Startup] ✅ Symlink creado: {models_target} → {source}")
+        # Remover directorio vacío si existe
+        if os.path.isdir(target_path) and not os.listdir(target_path):
+            os.rmdir(target_path)
+            logger.info(f"[Startup] Removido dir vacío: {target_path}")
+        elif os.path.isdir(target_path):
+            # Renombrar el existente
+            import shutil
+            shutil.rmtree(target_path, ignore_errors=True)
+            logger.info(f"[Startup] Removido dir existente: {target_path}")
+
+        result = subprocess.run(
+            ["git", "clone", xcodec_url, target_path],
+            capture_output=True, text=True, timeout=300
+        )
+        logger.info(f"[Startup] git clone stdout: {result.stdout[-500:] if result.stdout else 'empty'}")
+        if result.returncode != 0:
+            logger.error(f"[Startup] git clone stderr: {result.stderr[-500:] if result.stderr else 'empty'}")
+        else:
+            logger.info(f"[Startup] ✅ xcodec_mini_infer clonado en {target_path}")
+    except subprocess.TimeoutExpired:
+        logger.error("[Startup] ❌ git clone timeout (5 min)")
     except Exception as e:
-        logger.error(f"[Startup] ❌ Error creando symlink: {e}")
+        logger.error(f"[Startup] ❌ Error clonando: {e}")
+
+    # 3. Verificar que models/ existe ahora
+    models_dir = f"{target_path}/models"
+    if os.path.isdir(models_dir):
+        contents = os.listdir(models_dir)
+        logger.info(f"[Startup] ✅ models/ contiene: {contents}")
+    else:
+        logger.error(f"[Startup] ❌ models/ aún no existe en {target_path}")
+        logger.info(f"[Startup] Contenido de {target_path}: {os.listdir(target_path) if os.path.isdir(target_path) else 'NO EXISTE'}")
 
 
 # 🐕 Start GPU Watchdog on startup
@@ -487,8 +481,10 @@ def _get_env(yue_inference_dir: str) -> dict:
         f"{yue_inference_dir}/vocos",
         "/opt/YuE",
         "/opt/YuE/inference",
-        "/opt/YuE/xcodec_mini_infer",          # models/ vive aquí (submódulo)
-        "/opt/YuE/xcodec_mini_infer/models",   # por si acaso
+        "/opt/YuE/xcodec_mini_infer",
+        "/opt/YuE/xcodec_mini_infer/models",
+        "/opt/YuE/inference/xcodec_mini_infer",          # ubicación real tras git clone
+        "/opt/YuE/inference/xcodec_mini_infer/models",   # models/ vive aquí
     ]
     existing_paths = [p for p in paths if os.path.exists(p)]
 
