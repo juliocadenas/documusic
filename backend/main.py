@@ -1,6 +1,7 @@
 import os
 import glob
 import re
+import json
 import uuid
 import random
 import subprocess
@@ -565,6 +566,24 @@ def _get_env(yue_inference_dir: str) -> dict:
     env["ATTENTION_IMPLEMENTATION"] = "eager"
     env["USE_FLASH_ATTN"] = "0"
     env["FORCE_FLASH_ATTN"] = "0"
+    env["TRANSFORMERS_ATTN_IMPLEMENTATION"] = "eager"
+    env["FLASH_ATTENTION_FORCE_BUILD"] = "FALSE"
+
+    # Parchar config de los modelos para desactivar flash_attention_2
+    for model_dir in [f"{MODELS_DIR}/YuE-s1", f"{MODELS_DIR}/YuE-s2"]:
+        config_path = f"{model_dir}/config.json"
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, 'r') as f:
+                    config = json.loads(f.read())
+                if config.get('_attn_implementation') == 'flash_attention_2' or config.get('attn_implementation') == 'flash_attention_2':
+                    config['_attn_implementation'] = 'eager'
+                    config['attn_implementation'] = 'eager'
+                    with open(config_path, 'w') as f:
+                        f.write(json.dumps(config, indent=2))
+                    logger.info(f"[Inference] ✅ Patched {config_path} → eager attention")
+            except Exception as e:
+                logger.warning(f"[Inference] No se pudo parchar {config_path}: {e}")
     env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     env["PYTHONUNBUFFERED"] = "1"
     env["CUDA_LAUNCH_BLOCKING"] = "1"
