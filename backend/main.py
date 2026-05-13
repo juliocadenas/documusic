@@ -51,6 +51,23 @@ def _download_file(url: str, dest: str, min_size: int = 100) -> bool:
         return False
 
 
+def _patch_infer_flash_attn():
+    """Parcha infer.py para reemplazar flash_attention_2 por eager."""
+    infer_py = f"{YUE_DIR}/inference/infer.py"
+    if not os.path.exists(infer_py):
+        return
+    try:
+        with open(infer_py, 'r') as f:
+            content = f.read()
+        if 'flash_attention_2' in content:
+            content = content.replace('flash_attention_2', 'eager')
+            with open(infer_py, 'w') as f:
+                f.write(content)
+            logger.info(f"[Startup] ✅ infer.py parcheado: flash_attention_2 → eager")
+    except Exception as e:
+        logger.warning(f"[Startup] No se pudo parchar infer.py: {e}")
+
+
 def _ensure_models_available():
     """
     Garantiza que el paquete 'models' sea importable.
@@ -68,6 +85,7 @@ def _ensure_models_available():
     if (os.path.exists(critical_file) and os.path.getsize(critical_file) > 100
             and os.path.isdir(modules_dir) and os.listdir(modules_dir)):
         logger.info(f"[Startup] ✅ xcodec_mini_infer completo en {xcodec_in_inference}")
+        _patch_infer_flash_attn()
         return
 
     # SIEMPRE limpiar __init__.py basura
@@ -99,6 +117,9 @@ def _ensure_models_available():
                 logger.info(f"[Startup] ✅ models/: {os.listdir(models_dir)}")
             if os.path.isdir(modules_dir):
                 logger.info(f"[Startup] ✅ modules/: {os.listdir(modules_dir)}")
+
+            # Parchar infer.py para desactivar flash_attention_2
+            _patch_infer_flash_attn()
             return
         else:
             logger.error(f"[Startup] ❌ Clone falló: {result.stderr[:300]}")
