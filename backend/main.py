@@ -92,12 +92,13 @@ def _patch_infer_py():
                 logger.info(f"[Startup] infer.py: agregado attn_implementation='eager' a from_pretrained en pos {start}")
 
         # 3. Parchar torchaudio.save para usar soundfile como fallback (torchcodec no instalado)
-        if 'torchaudio_save_patched_v2' not in content:
-            # Remove old patch if present
-            if 'torchaudio_save_patched' in content:
+        if 'torchaudio_patched_v3' not in content:
+            # Remove old patches if present (v1 or v2)
+            if 'torchaudio_save_patched' in content or 'torchaudio_patched_v3' not in content:
                 old_patch_start = content.find('# === DOCUMUSIC PATCH')
                 if old_patch_start != -1:
-                    old_patch_end = content.find('# torchaudio_save_patched = True', old_patch_start)
+                    # Find the end of the old patch block
+                    old_patch_end = content.find('# torchaudio', old_patch_start)
                     if old_patch_end != -1:
                         old_patch_end = content.find('\n', old_patch_end) + 1
                         content = content[:old_patch_start] + content[old_patch_end:]
@@ -107,9 +108,10 @@ def _patch_infer_py():
             if torchaudio_import in content:
                 patch_code = """
 
-# === DOCUMUSIC PATCH v2: torchaudio.save fallback a soundfile ===
+# === DOCUMUSIC PATCH v3: torchaudio.save + torchaudio.load fallback a soundfile ===
 import torchaudio as _ta_orig
 _ta_original_save = _ta_orig.save
+_ta_original_load = _ta_orig.load
 def _safe_ta_save(filepath, src, sample_rate, **kwargs):
     try:
         _ta_original_save(filepath, src, sample_rate, **kwargs)
@@ -123,8 +125,26 @@ def _safe_ta_save(filepath, src, sample_rate, **kwargs):
         if not _fp.endswith('.wav'):
             _fp = _fp.rsplit('.', 1)[0] + '.wav'
         sf.write(_fp, wav_np, sample_rate, format='WAV', subtype='PCM_16')
+def _safe_ta_load(filepath, **kwargs):
+    try:
+        return _ta_original_load(filepath, **kwargs)
+    except (ImportError, RuntimeError, Exception) as _e:
+        import soundfile as sf
+        import torch
+        import numpy as np
+        import os
+        _fp = str(filepath)
+        if not os.path.exists(_fp) and _fp.endswith('.mp3'):
+            _fp = _fp.rsplit('.', 1)[0] + '.wav'
+        wav_np, sr = sf.read(_fp)
+        if wav_np.ndim == 1:
+            wav_np = wav_np.reshape(1, -1)
+        else:
+            wav_np = wav_np.T
+        return torch.tensor(wav_np, dtype=torch.float32), sr
 _ta_orig.save = _safe_ta_save
-# torchaudio_save_patched_v2 = True
+_ta_orig.load = _safe_ta_load
+# torchaudio_patched_v3 = True
 """
                 idx = content.find(torchaudio_import)
                 end_of_line = content.find('\n', idx)
