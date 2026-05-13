@@ -51,8 +51,8 @@ def _download_file(url: str, dest: str, min_size: int = 100) -> bool:
         return False
 
 
-def _patch_infer_flash_attn():
-    """Parcha infer.py para desactivar flash_attention_2 por completo."""
+def _patch_infer_py():
+    """Parcha infer.py: flash_attention_2 → eager, torchaudio.save → soundfile fallback."""
     infer_py = f"{YUE_DIR}/inference/infer.py"
     if not os.path.exists(infer_py):
         logger.warning("[Startup] infer.py no encontrado para parchar")
@@ -71,11 +71,8 @@ def _patch_infer_flash_attn():
 
         # 2. Agregar attn_implementation="eager" a from_pretrained() si no lo tiene
         import re
-        # Buscar líneas con from_pretrained que NO tengan attn_implementation
-        from_pretrained_pattern = r'(from_pretrained\([^)]*?)(\))'
         matches = list(re.finditer(r'from_pretrained\(', content))
         for m in matches:
-            # Encontrar el cierre del paréntesis
             start = m.start()
             depth = 0
             end = start
@@ -89,18 +86,47 @@ def _patch_infer_flash_attn():
                         break
             call_text = content[start:end+1]
             if 'attn_implementation' not in call_text:
-                # Insertar antes del cierre del paréntesis
                 new_call = content[start:end] + ', attn_implementation="eager")'
                 content = content[:start] + new_call + content[end+1:]
                 patched = True
                 logger.info(f"[Startup] infer.py: agregado attn_implementation='eager' a from_pretrained en pos {start}")
+
+        # 3. Parchar torchaudio.save para usar soundfile como fallback (torchcodec no instalado)
+        if 'torchaudio_save_patched' not in content:
+            # Inject monkey-patch after the first 'import torchaudio' line
+            torchaudio_import = "import torchaudio"
+            if torchaudio_import in content:
+                patch_code = """
+
+# === DOCUMUSIC PATCH: torchaudio.save fallback a soundfile ===
+import torchaudio as _ta_orig
+_ta_original_save = _ta_orig.save
+def _safe_ta_save(filepath, src, sample_rate, **kwargs):
+    try:
+        _ta_original_save(filepath, src, sample_rate, **kwargs)
+    except (ImportError, RuntimeError, Exception) as _e:
+        import soundfile as sf
+        import numpy as np
+        wav_np = src.squeeze().cpu().numpy()
+        if wav_np.ndim > 1:
+            wav_np = wav_np.T
+        sf.write(str(filepath), wav_np, sample_rate, subtype='PCM_16')
+_ta_orig.save = _safe_ta_save
+# torchaudio_save_patched = True
+"""
+                # Insert after the first 'import torchaudio' line
+                idx = content.find(torchaudio_import)
+                end_of_line = content.find('\n', idx)
+                content = content[:end_of_line + 1] + patch_code + content[end_of_line + 1:]
+                patched = True
+                logger.info("[Startup] infer.py: ✅ patched torchaudio.save with soundfile fallback")
 
         if patched and content != original:
             with open(infer_py, 'w') as f:
                 f.write(content)
             logger.info("[Startup] ✅ infer.py parcheado correctamente")
         else:
-            logger.info("[Startup] infer.py: sin cambios necesarios (ya parcheado o sin from_pretrained)")
+            logger.info("[Startup] infer.py: sin cambios necesarios (ya parcheado)")
     except Exception as e:
         logger.warning(f"[Startup] No se pudo parchar infer.py: {e}")
 
@@ -122,7 +148,7 @@ def _ensure_models_available():
     if (os.path.exists(critical_file) and os.path.getsize(critical_file) > 100
             and os.path.isdir(modules_dir) and os.listdir(modules_dir)):
         logger.info(f"[Startup] ✅ xcodec_mini_infer completo en {xcodec_in_inference}")
-        _patch_infer_flash_attn()
+        _patch_infer_py()
         return
 
     # SIEMPRE limpiar __init__.py basura
@@ -156,7 +182,7 @@ def _ensure_models_available():
                 logger.info(f"[Startup] ✅ modules/: {os.listdir(modules_dir)}")
 
             # Parchar infer.py para desactivar flash_attention_2
-            _patch_infer_flash_attn()
+            _patch_infer_py()
             return
         else:
             logger.error(f"[Startup] ❌ Clone falló: {result.stderr[:300]}")
@@ -644,7 +670,7 @@ def _get_env(yue_inference_dir: str) -> dict:
                 logger.warning(f"[Inference] No se pudo parchar {config_path}: {e}")
 
     # También parchar infer.py antes de cada inferencia
-    _patch_infer_flash_attn()
+    _patch_infer_py()
     env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     env["PYTHONUNBUFFERED"] = "1"
     env["CUDA_LAUNCH_BLOCKING"] = "1"
