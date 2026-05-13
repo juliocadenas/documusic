@@ -2,14 +2,30 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import './App.css';
 
-const LoadingOverlay = ({ status, logs, numVariants, completedVariants }) => {
+const LoadingOverlay = ({ status, logs, numVariants, completedVariants, startTime, serverAlive }) => {
   const consoleRef = React.useRef(null);
-  
+  const [elapsed, setElapsed] = React.useState(0);
+
   React.useEffect(() => {
     if (consoleRef.current) {
       consoleRef.current.scrollTop = consoleRef.current.scrollHeight;
     }
   }, [logs]);
+
+  // Timer: update every second
+  React.useEffect(() => {
+    if (!startTime) return;
+    const iv = setInterval(() => {
+      setElapsed(Math.floor((Date.now() - startTime) / 1000));
+    }, 1000);
+    return () => clearInterval(iv);
+  }, [startTime]);
+
+  const formatTime = (secs) => {
+    const m = Math.floor(secs / 60);
+    const s = secs % 60;
+    return `${m}:${s.toString().padStart(2, '0')}`;
+  };
 
   const progress = numVariants > 0 ? Math.round((completedVariants / numVariants) * 100) : 0;
 
@@ -21,9 +37,27 @@ const LoadingOverlay = ({ status, logs, numVariants, completedVariants }) => {
           {status === 'generating' ? `🎤 Generando en Madrid (YuE 7B)...` : '⚡ Conectando con RTX 5080...'}
         </div>
         <div className="loading-overlay-sub">
-          {status === 'generating' 
+          {status === 'generating'
             ? `${numVariants} variante(s) · ${completedVariants}/${numVariants} completada(s) · Esto suele tardar 2-5 minutos`
             : 'Preparando entorno de ejecución...'}
+        </div>
+        
+        {/* Timer + Server Status */}
+        <div style={{ display: 'flex', justifyContent: 'center', gap: '24px', margin: '8px 0', fontSize: '14px', color: '#a5b4fc' }}>
+          {startTime && (
+            <span style={{ fontFamily: 'monospace', fontSize: '18px', color: '#e0e7ff' }}>
+              ⏱ {formatTime(elapsed)}
+            </span>
+          )}
+          <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <span style={{
+              width: 8, height: 8, borderRadius: '50%',
+              background: serverAlive ? '#4ade80' : '#f87171',
+              boxShadow: serverAlive ? '0 0 6px #4ade80' : '0 0 6px #f87171',
+              animation: 'pulse 2s infinite',
+            }} />
+            {serverAlive ? 'Servidor conectado' : 'Servidor no responde'}
+          </span>
         </div>
         
         {numVariants > 0 && (
@@ -106,6 +140,8 @@ export default function App() {
   const [enrichedPreview, setEnrichedPreview] = useState(null); // 🎨 Enriched prompt preview
   const [selectedVariant, setSelectedVariant] = useState(0);
   const [variants, setVariants] = useState([]);
+  const [startTime, setStartTime] = useState(null);
+  const [serverAlive, setServerAlive] = useState(true);
 
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type });
@@ -113,11 +149,11 @@ export default function App() {
   };
 
   useEffect(() => {
-    const check = () => axios.get('/api/').then(r => setServerStatus(r.data)).catch(() => setServerStatus({ gpu: 'Offline', status: 'Disconnected' }));
+    const check = () => axios.get('/api/').then(r => { setServerStatus(r.data); setServerAlive(true); }).catch(() => { setServerStatus({ gpu: 'Offline', status: 'Disconnected' }); setServerAlive(false); });
     check();
-    const t = setInterval(check, 15000);
+    const t = setInterval(check, loading ? 5000 : 15000);
     return () => clearInterval(t);
-  }, []);
+  }, [loading]);
 
   // 🐕 GPU Watchdog — poll every 5s for alerts
   useEffect(() => {
@@ -190,6 +226,7 @@ export default function App() {
   const handleGenerate = async () => {
     if (!lyrics.trim()) { showToast('⚠️ Escribe la letra primero', 'error'); return; }
     setLoading(true);
+    setStartTime(Date.now());
     setResult(null);
     setError(null);
     setErrorDetail(null);
@@ -237,7 +274,7 @@ export default function App() {
 
   return (
     <div className="app">
-      {loading && <LoadingOverlay status={genStatus} logs={logs} numVariants={numVariants} completedVariants={completedVariants} />}
+      {loading && <LoadingOverlay status={genStatus} logs={logs} numVariants={numVariants} completedVariants={completedVariants} startTime={startTime} serverAlive={serverAlive} />}
       {toast && <Toast msg={toast.msg} type={toast.type} />}
 
       {/* ---- HEADER ---- */}
