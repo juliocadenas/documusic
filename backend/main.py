@@ -233,17 +233,17 @@ VALID_SECTION_TAGS = {'verse', 'chorus', 'bridge', 'intro', 'outro'}
 # FASE 0.1: Parámetros de inferencia optimizados
 # ============================================================
 YUE_PARAMS = {
-    "max_new_tokens": 4096,       # Más tokens = canción más larga (60s → 90s+)
-    "run_n_segments": 3,          # 3 segmentos para mejor estructura verso/coro/bridge
-    "repetition_penalty": 1.1,    # Evitar loops (ya es default en YuE, explícito para claridad)
-    "stage2_batch_size": 4,       # Batch size para Stage 2 (default)
+    "max_new_tokens": 1500,       # Reducido de 4096 → 1500 para caber en 16GB VRAM (~30s audio)
+    "run_n_segments": 2,          # Reducido de 3 → 2 segmentos (menos KV cache)
+    "repetition_penalty": 1.1,    # Evitar loops
+    "stage2_batch_size": 1,       # Reducido de 4 → 1 (crítico para VRAM)
     "rescale": True,              # Evitar clipping en la salida
 }
 
 # FASE 0.3: Configuración de multi-variante
 VARIANT_CONFIG = {
     "enabled": True,              # Generar múltiples variantes
-    "count": 2,                   # Número de variantes (2 para no saturar GPU)
+    "count": 1,                   # 1 variante para no saturar GPU (OOM con 2)
     "seeds": "random",            # "random" o lista de ints
 }
 
