@@ -76,25 +76,15 @@ def _ensure_models_available():
             logger.info(f"[Startup] Limpiando archivo basura: {f} ({os.path.getsize(fpath)} bytes)")
             os.remove(fpath)
 
-    # Crear __init__.py válido
-    init_file = os.path.join(models_dir, "__init__.py")
-    if not os.path.exists(init_file) or os.path.getsize(init_file) < 10:
-        with open(init_file, 'w') as f:
-            f.write("")
-        logger.info(f"[Startup] __init__.py creado")
-
     # Hugging Face resolve URLs para el repo m-a-p/xcodec_mini_infer
     hf_base = "https://huggingface.co/m-a-p/xcodec_mini_infer/resolve/main"
 
     # GitHub raw URLs como fallback (desde el fork/commit del submódulo)
     gh_base = "https://raw.githubusercontent.com/multimodal-art-projection/xcodec_mini_infer/main"
 
+    # Solo descargar archivos que existen en HuggingFace (NO __init__.py, se crea después)
     files_to_download = [
-        "models/__init__.py",
         "models/soundstream_hubert_new.py",
-        "models/encodec.py",
-        "models/vencodec.py",
-        "models/vencodec_utils.py",
     ]
 
     success_count = 0
@@ -119,6 +109,12 @@ def _ensure_models_available():
 
         if not downloaded:
             logger.warning(f"[Startup] ⚠️ No se pudo descargar {rel_path} desde ninguna fuente")
+
+    # Crear __init__.py válido DESPUÉS de las descargas (para no ser sobrescrito)
+    init_file = os.path.join(models_dir, "__init__.py")
+    with open(init_file, 'w') as f:
+        f.write("")
+    logger.info(f"[Startup] __init__.py creado/limpiado")
 
     # 3. Verificar resultado
     if os.path.exists(critical_file) and os.path.getsize(critical_file) > 100:
