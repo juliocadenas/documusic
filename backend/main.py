@@ -132,6 +132,21 @@ _ta_orig.save = _safe_ta_save
                 patched = True
                 logger.info("[Startup] infer.py: ✅ patched torchaudio.save with soundfile fallback v2")
 
+        # 4. Cambiar .mp3 → .wav en rutas de guardado (soundfile solo soporta WAV)
+        if 'mp3_to_wav_patched' not in content:
+            mp3_replacements = [
+                ("+ \".mp3\"", "+ \".wav\""),          # save_path en recons section
+                ("'itrack.mp3'", "'itrack.wav'"),      # vocoder stems
+                ("'vtrack.mp3'", "'vtrack.wav'"),      # vocoder stems
+            ]
+            for old, new in mp3_replacements:
+                if old in content:
+                    content = content.replace(old, new)
+                    patched = True
+                    logger.info(f"[Startup] infer.py: {old} → {new}")
+            # Mark as patched
+            content += "\n# mp3_to_wav_patched = True\n"
+
         if patched and content != original:
             with open(infer_py, 'w') as f:
                 f.write(content)
