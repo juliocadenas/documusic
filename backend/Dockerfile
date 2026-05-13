@@ -29,9 +29,22 @@ RUN pip3 install \
     numpy \
     omegaconf
 
-# Clonar YuE con --recurse-submodules para obtener xcodec_mini_infer/models/
-# (xcodec_mini_infer es un submódulo de Git, no se descarga con clone simple)
-RUN git clone --recurse-submodules https://github.com/multimodal-art-projection/YuE.git /opt/YuE
+# Clonar YuE
+RUN git clone https://github.com/multimodal-art-projection/YuE.git /opt/YuE
+
+# Inicializar submódulos (xcodec_mini_infer es un submódulo de Git)
+RUN cd /opt/YuE && git submodule update --init --recursive || true
+
+# Fallback: si el submódulo sigue vacío, clonar xcodec_mini_infer directamente
+RUN if [ ! -f /opt/YuE/inference/xcodec_mini_infer/models/soundstream_hubert_new.py ]; then \
+        echo "⚠️ Submódulo vacío, clonando xcodec_mini_infer manualmente..."; \
+        rm -rf /opt/YuE/inference/xcodec_mini_infer; \
+        git clone https://github.com/multimodal-art-projection/xcodec_mini_infer.git /opt/YuE/inference/xcodec_mini_infer; \
+    fi
+
+# Verificar que models/ existe
+RUN ls -la /opt/YuE/inference/xcodec_mini_infer/ && \
+    ls -la /opt/YuE/inference/xcodec_mini_infer/models/ || echo "❌ models/ no encontrado"
 
 # Instalar dependencias adicionales de YuE
 RUN cd /opt/YuE && pip3 install -r requirements.txt || true
