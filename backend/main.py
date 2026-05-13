@@ -52,18 +52,55 @@ def _download_file(url: str, dest: str, min_size: int = 100) -> bool:
 
 
 def _patch_infer_flash_attn():
-    """Parcha infer.py para reemplazar flash_attention_2 por eager."""
+    """Parcha infer.py para desactivar flash_attention_2 por completo."""
     infer_py = f"{YUE_DIR}/inference/infer.py"
     if not os.path.exists(infer_py):
+        logger.warning("[Startup] infer.py no encontrado para parchar")
         return
     try:
         with open(infer_py, 'r') as f:
             content = f.read()
+        original = content
+        patched = False
+
+        # 1. Reemplazar flash_attention_2 → eager
         if 'flash_attention_2' in content:
             content = content.replace('flash_attention_2', 'eager')
+            patched = True
+            logger.info("[Startup] infer.py: flash_attention_2 → eager")
+
+        # 2. Agregar attn_implementation="eager" a from_pretrained() si no lo tiene
+        import re
+        # Buscar líneas con from_pretrained que NO tengan attn_implementation
+        from_pretrained_pattern = r'(from_pretrained\([^)]*?)(\))'
+        matches = list(re.finditer(r'from_pretrained\(', content))
+        for m in matches:
+            # Encontrar el cierre del paréntesis
+            start = m.start()
+            depth = 0
+            end = start
+            for i in range(start, len(content)):
+                if content[i] == '(':
+                    depth += 1
+                elif content[i] == ')':
+                    depth -= 1
+                    if depth == 0:
+                        end = i
+                        break
+            call_text = content[start:end+1]
+            if 'attn_implementation' not in call_text:
+                # Insertar antes del cierre del paréntesis
+                new_call = content[start:end] + ', attn_implementation="eager")'
+                content = content[:start] + new_call + content[end+1:]
+                patched = True
+                logger.info(f"[Startup] infer.py: agregado attn_implementation='eager' a from_pretrained en pos {start}")
+
+        if patched and content != original:
             with open(infer_py, 'w') as f:
                 f.write(content)
-            logger.info(f"[Startup] ✅ infer.py parcheado: flash_attention_2 → eager")
+            logger.info("[Startup] ✅ infer.py parcheado correctamente")
+        else:
+            logger.info("[Startup] infer.py: sin cambios necesarios (ya parcheado o sin from_pretrained)")
     except Exception as e:
         logger.warning(f"[Startup] No se pudo parchar infer.py: {e}")
 
@@ -590,21 +627,24 @@ def _get_env(yue_inference_dir: str) -> dict:
     env["TRANSFORMERS_ATTN_IMPLEMENTATION"] = "eager"
     env["FLASH_ATTENTION_FORCE_BUILD"] = "FALSE"
 
-    # Parchar config de los modelos para desactivar flash_attention_2
+    # Parchar config de los modelos — SIEMPRE forzar eager attention (incondicional)
     for model_dir in [f"{MODELS_DIR}/YuE-s1", f"{MODELS_DIR}/YuE-s2"]:
         config_path = f"{model_dir}/config.json"
         if os.path.exists(config_path):
             try:
                 with open(config_path, 'r') as f:
                     config = json.loads(f.read())
-                if config.get('_attn_implementation') == 'flash_attention_2' or config.get('attn_implementation') == 'flash_attention_2':
-                    config['_attn_implementation'] = 'eager'
-                    config['attn_implementation'] = 'eager'
-                    with open(config_path, 'w') as f:
-                        f.write(json.dumps(config, indent=2))
-                    logger.info(f"[Inference] ✅ Patched {config_path} → eager attention")
+                # SIEMPRE forzar eager, sin importar el valor actual
+                config['_attn_implementation'] = 'eager'
+                config['attn_implementation'] = 'eager'
+                with open(config_path, 'w') as f:
+                    f.write(json.dumps(config, indent=2))
+                logger.info(f"[Inference] ✅ Forced eager attention in {config_path}")
             except Exception as e:
                 logger.warning(f"[Inference] No se pudo parchar {config_path}: {e}")
+
+    # También parchar infer.py antes de cada inferencia
+    _patch_infer_flash_attn()
     env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     env["PYTHONUNBUFFERED"] = "1"
     env["CUDA_LAUNCH_BLOCKING"] = "1"
