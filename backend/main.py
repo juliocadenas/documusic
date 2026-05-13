@@ -36,78 +36,99 @@ os.makedirs("/app/tmp", exist_ok=True)
 
 app.mount("/api/outputs", StaticFiles(directory=OUTPUT_DIR), name="outputs")
 
-def _download_file(url: str, dest: str) -> bool:
-    """Descarga un archivo desde URL. Retorna True si tuvo éxito."""
+def _download_file(url: str, dest: str, min_size: int = 100) -> bool:
+    """Descarga un archivo desde URL. Retorna True si tuvo éxito y el archivo > min_size bytes."""
     try:
         result = subprocess.run(
             ["curl", "-sL", "-o", dest, url],
-            capture_output=True, text=True, timeout=60
+            capture_output=True, text=True, timeout=120
         )
-        if result.returncode == 0 and os.path.exists(dest) and os.path.getsize(dest) > 0:
+        if result.returncode == 0 and os.path.exists(dest) and os.path.getsize(dest) >= min_size:
             return True
-        # Fallback con wget
-        result = subprocess.run(
-            ["wget", "-q", "-O", dest, url],
-            capture_output=True, text=True, timeout=60
-        )
-        return result.returncode == 0 and os.path.exists(dest) and os.path.getsize(dest) > 0
-    except Exception as e:
-        logger.error(f"[Startup] Error descargando {url}: {e}")
+        return False
+    except Exception:
         return False
 
 
 def _ensure_models_available():
     """
     Garantiza que el paquete 'models' sea importable.
-    Descarga los archivos de xcodec_mini_infer desde GitHub raw URLs.
+    Descarga xcodec_mini_infer desde Hugging Face (repo público m-a-p/xcodec_mini_infer).
     Funciona en caliente — no requiere rebuild de Docker.
     """
     xcodec_in_inference = f"{YUE_DIR}/inference/xcodec_mini_infer"
 
-    # 1. Verificar si models/ ya existe y tiene contenido
+    # 1. Verificar si models/ ya existe y tiene contenido real
     models_dir = f"{xcodec_in_inference}/models"
-    if os.path.isdir(models_dir) and os.listdir(models_dir):
-        logger.info(f"[Startup] ✅ models/ ya existe en {models_dir}")
+    critical_file = f"{models_dir}/soundstream_hubert_new.py"
+    if os.path.exists(critical_file) and os.path.getsize(critical_file) > 100:
+        logger.info(f"[Startup] ✅ models/ ya existe con contenido real en {models_dir}")
         return
 
-    # 2. Intentar git clone primero (por si tiene acceso)
-    logger.info(f"[Startup] ⚠️ models/ no encontrado, intentando descargar...")
+    # 2. Descargar desde Hugging Face
+    logger.info(f"[Startup] ⚠️ models/ no encontrado o vacío, descargando desde Hugging Face...")
 
-    # Recrear el directorio si fue borrado
-    os.makedirs(xcodec_in_inference, exist_ok=True)
-    os.makedirs(f"{xcodec_in_inference}/models", exist_ok=True)
-    os.makedirs(f"{xcodec_in_inference}/final_ckpt", exist_ok=True)
+    os.makedirs(models_dir, exist_ok=True)
 
-    # 3. Descargar archivos desde GitHub raw URLs (repo público de YuE)
-    base_url = "https://raw.githubusercontent.com/multimodal-art-projection/YuE/main/inference/xcodec_mini_infer"
+    # Hugging Face resolve URLs para el repo m-a-p/xcodec_mini_infer
+    hf_base = "https://huggingface.co/m-a-p/xcodec_mini_infer/resolve/main"
 
-    files_to_download = {
-        "models/soundstream_hubert_new.py": f"{base_url}/models/soundstream_hubert_new.py",
-        "models/__init__.py": f"{base_url}/models/__init__.py",
-        "models/encodec.py": f"{base_url}/models/encodec.py",
-        "models/vencodec.py": f"{base_url}/models/vencodec.py",
-        "models/vencodec_utils.py": f"{base_url}/models/vencodec_utils.py",
-    }
+    # GitHub raw URLs como fallback (desde el fork/commit del submódulo)
+    gh_base = "https://raw.githubusercontent.com/multimodal-art-projection/xcodec_mini_infer/main"
+
+    files_to_download = [
+        "models/__init__.py",
+        "models/soundstream_hubert_new.py",
+        "models/encodec.py",
+        "models/vencodec.py",
+        "models/vencodec_utils.py",
+    ]
 
     success_count = 0
-    for rel_path, url in files_to_download.items():
+    for rel_path in files_to_download:
         dest = f"{xcodec_in_inference}/{rel_path}"
         os.makedirs(os.path.dirname(dest), exist_ok=True)
-        logger.info(f"[Startup] Descargando {rel_path}...")
-        if _download_file(url, dest):
-            success_count += 1
-            logger.info(f"[Startup] ✅ {rel_path} descargado ({os.path.getsize(dest)} bytes)")
-        else:
-            logger.warning(f"[Startup] ⚠️ No se pudo descargar {rel_path}")
 
-    # 4. Verificar que el archivo crítico existe
-    critical_file = f"{xcodec_in_inference}/models/soundstream_hubert_new.py"
-    if os.path.exists(critical_file) and os.path.getsize(critical_file) > 0:
-        logger.info(f"[Startup] ✅ soundstream_hubert_new.py descargado correctamente")
+        # Intentar Hugging Face primero, luego GitHub
+        urls = [
+            f"{hf_base}/{rel_path}",
+            f"{gh_base}/{rel_path}",
+        ]
+
+        downloaded = False
+        for url in urls:
+            logger.info(f"[Startup] Intentando {url}...")
+            if _download_file(url, dest, min_size=50):
+                success_count += 1
+                logger.info(f"[Startup] ✅ {rel_path} descargado ({os.path.getsize(dest)} bytes) desde {url}")
+                downloaded = True
+                break
+
+        if not downloaded:
+            logger.warning(f"[Startup] ⚠️ No se pudo descargar {rel_path} desde ninguna fuente")
+
+    # 3. Verificar resultado
+    if os.path.exists(critical_file) and os.path.getsize(critical_file) > 100:
+        logger.info(f"[Startup] ✅ soundstream_hubert_new.py OK ({os.path.getsize(critical_file)} bytes)")
         logger.info(f"[Startup] ✅ models/ contiene: {os.listdir(models_dir)}")
     else:
-        logger.error(f"[Startup] ❌ No se pudo descargar soundstream_hubert_new.py")
-        logger.error(f"[Startup] El contenedor no tiene acceso a GitHub. Se requiere rebuild con red.")
+        logger.error(f"[Startup] ❌ Falló la descarga de models/")
+        # Último recurso: intentar git clone con la URL de Hugging Face
+        logger.info(f"[Startup] 🔄 Último intento: git clone desde Hugging Face...")
+        try:
+            import shutil
+            shutil.rmtree(xcodec_in_inference, ignore_errors=True)
+            result = subprocess.run(
+                ["git", "clone", "https://huggingface.co/m-a-p/xcodec_mini_infer", xcodec_in_inference],
+                capture_output=True, text=True, timeout=300
+            )
+            if result.returncode == 0:
+                logger.info(f"[Startup] ✅ Clone desde Hugging Face exitoso")
+                logger.info(f"[Startup] Contenido: {os.listdir(xcodec_in_inference)}")
+            else:
+                logger.error(f"[Startup] ❌ Clone falló: {result.stderr[:300]}")
+        except Exception as e:
+            logger.error(f"[Startup] ❌ Último intento falló: {e}")
 
 
 # 🐕 Start GPU Watchdog on startup
