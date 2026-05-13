@@ -61,11 +61,32 @@ def _ensure_models_available():
     # 1. Verificar si models/ ya existe y tiene contenido real
     models_dir = f"{xcodec_in_inference}/models"
     critical_file = f"{models_dir}/soundstream_hubert_new.py"
+
+    # SIEMPRE limpiar __init__.py basura (se hace ANTES del early return)
+    init_file = os.path.join(models_dir, "__init__.py")
+    if os.path.exists(init_file) and os.path.getsize(init_file) < 100:
+        try:
+            with open(init_file, 'r') as f:
+                content = f.read().strip()
+            if '404' in content or 'Not Found' in content or len(content) < 5:
+                logger.info(f"[Startup] Limpiando __init__.py basura: '{content[:50]}'")
+                with open(init_file, 'w') as f:
+                    f.write("")
+        except Exception:
+            with open(init_file, 'w') as f:
+                f.write("")
+
+    # Siempre asegurar que __init__.py existe
+    if not os.path.exists(init_file):
+        os.makedirs(models_dir, exist_ok=True)
+        with open(init_file, 'w') as f:
+            f.write("")
+
     if os.path.exists(critical_file) and os.path.getsize(critical_file) > 100:
         logger.info(f"[Startup] ✅ models/ ya existe con contenido real en {models_dir}")
         return
 
-    # 2. Limpiar archivos basura (descargas fallidas con "404: Not Found")
+    # 2. Descargar desde Hugging Face
     logger.info(f"[Startup] ⚠️ models/ no encontrado o vacío, descargando desde Hugging Face...")
     os.makedirs(models_dir, exist_ok=True)
 
