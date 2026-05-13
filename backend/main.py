@@ -87,6 +87,7 @@ def find_xcodec_paths():
     search_bases = [
         "/opt/YuE",
         "/opt/YuE/inference",
+        "/app/models",
     ]
     for base in search_bases:
         config_files = glob.glob(f"{base}/**/final_ckpt/config.yaml", recursive=True)
@@ -355,15 +356,35 @@ def _get_env(yue_inference_dir: str) -> dict:
         f"{yue_inference_dir}/xcodec_mini_infer/models",
         f"{yue_inference_dir}/vocos",
         "/opt/YuE",
+        "/opt/YuE/inference",
     ]
     existing_paths = [p for p in paths if os.path.exists(p)]
-    env["PYTHONPATH"] = ":".join(existing_paths) + ":" + env.get("PYTHONPATH", "")
+
+    # Buscar dinámicamente todos los directorios 'models' bajo /opt/YuE
+    # y añadir sus padres al PYTHONPATH para que `from models.xxx` funcione
+    models_dirs = glob.glob("/opt/YuE/**/models", recursive=True)
+    for md in models_dirs:
+        parent = os.path.dirname(md)
+        if os.path.isdir(md) and parent not in existing_paths:
+            existing_paths.append(parent)
+            logger.info(f"[PYTHONPATH] Añadido padre de models/: {parent}")
+
+    # Eliminar duplicados manteniendo orden
+    seen = set()
+    unique_paths = []
+    for p in existing_paths:
+        if p not in seen:
+            seen.add(p)
+            unique_paths.append(p)
+
+    env["PYTHONPATH"] = ":".join(unique_paths) + ":" + env.get("PYTHONPATH", "")
     env["ATTENTION_IMPLEMENTATION"] = "eager"
     env["USE_FLASH_ATTN"] = "0"
     env["FORCE_FLASH_ATTN"] = "0"
     env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     env["PYTHONUNBUFFERED"] = "1"
     env["CUDA_LAUNCH_BLOCKING"] = "1"
+    logger.info(f"[PYTHONPATH] Rutas finales: {unique_paths}")
     return env
 
 
