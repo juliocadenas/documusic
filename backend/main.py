@@ -36,30 +36,52 @@ os.makedirs("/app/tmp", exist_ok=True)
 
 app.mount("/api/outputs", StaticFiles(directory=OUTPUT_DIR), name="outputs")
 
-def _ensure_models_symlink():
+def _ensure_models_available():
     """
-    Garantiza que el paquete 'models' sea importable desde /opt/YuE.
-    El paquete real vive en /opt/YuE/xcodec_mini_infer/models/ (submódulo de Git).
-    Creamos un symlink /opt/YuE/models → xcodec_mini_infer/models si no existe.
+    Garantiza que el paquete 'models' sea importable.
+    El submódulo xcodec_mini_infer puede estar vacío si --recurse-submodules falló.
     """
-    models_target = f"{YUE_DIR}/models"
-    models_source = f"{YUE_DIR}/xcodec_mini_infer/models"
+    # 1. Intentar inicializar submódulos de Git si están vacíos
+    xcodec_in_inference = f"{YUE_DIR}/inference/xcodec_mini_infer"
+    xcodec_at_root = f"{YUE_DIR}/xcodec_mini_infer"
 
-    if os.path.islink(models_target):
-        logger.info(f"[Startup] Symlink ya existe: {models_target} → {os.readlink(models_target)}")
-        return
+    for xcodec_path in [xcodec_at_root, xcodec_in_inference]:
+        if os.path.isdir(xcodec_path):
+            contents = os.listdir(xcodec_path)
+            logger.info(f"[Startup] Contenido de {xcodec_path}: {contents}")
+            if not contents or (len(contents) <= 2 and '.git' in contents):
+                logger.info(f"[Startup] ⚠️ Submódulo vacío detectado en {xcodec_path}, inicializando...")
+                try:
+                    result = subprocess.run(
+                        ["git", "submodule", "update", "--init", "--recursive"],
+                        cwd=os.path.dirname(xcodec_path),
+                        capture_output=True, text=True, timeout=120
+                    )
+                    logger.info(f"[Startup] git submodule stdout: {result.stdout}")
+                    if result.stderr:
+                        logger.info(f"[Startup] git submodule stderr: {result.stderr}")
+                    # Verificar de nuevo
+                    new_contents = os.listdir(xcodec_path)
+                    logger.info(f"[Startup] Después de init: {new_contents}")
+                except Exception as e:
+                    logger.error(f"[Startup] ❌ Error inicializando submódulo: {e}")
 
-    if os.path.isdir(models_target):
-        logger.info(f"[Startup] Directorio models/ ya existe en {models_target}")
-        return
-
-    # Buscar models/ en cualquier parte bajo /opt/YuE
+    # 2. Buscar models/ en cualquier parte bajo /opt/YuE
     candidates = glob.glob(f"{YUE_DIR}/**/models", recursive=True)
     candidates = [c for c in candidates if os.path.isdir(c) and '__pycache__' not in c]
+    logger.info(f"[Startup] Directorios 'models/' encontrados: {candidates}")
+
+    # 3. Crear symlink /opt/YuE/models → donde esté models/
+    models_target = f"{YUE_DIR}/models"
+
+    if os.path.isdir(models_target) or os.path.islink(models_target):
+        logger.info(f"[Startup] models/ ya resuelto en {models_target}")
+        return
 
     if not candidates:
         logger.error(f"[Startup] ❌ No se encontró ningún directorio 'models/' bajo {YUE_DIR}")
         logger.info(f"[Startup] Contenido de {YUE_DIR}: {os.listdir(YUE_DIR) if os.path.isdir(YUE_DIR) else 'NO EXISTE'}")
+        logger.info(f"[Startup] Contenido de inference/: {os.listdir(f'{YUE_DIR}/inference') if os.path.isdir(f'{YUE_DIR}/inference') else 'NO EXISTE'}")
         return
 
     # Preferir xcodec_mini_infer/models
@@ -76,14 +98,13 @@ def _ensure_models_symlink():
         logger.info(f"[Startup] ✅ Symlink creado: {models_target} → {source}")
     except Exception as e:
         logger.error(f"[Startup] ❌ Error creando symlink: {e}")
-        logger.info(f"[Startup] Candidates encontrados: {candidates}")
 
 
 # 🐕 Start GPU Watchdog on startup
 @app.on_event("startup")
 async def startup_event():
     start_watchdog()
-    _ensure_models_symlink()
+    _ensure_models_available()
     logger.info("[Startup] 🐕 GPU Watchdog iniciado — monitoreando VRAM y temperatura")
 
 jobs = {}
@@ -250,6 +271,21 @@ def status():
 @app.get("/api/diagnose")
 def diagnose_yue():
     """Diagnóstico completo de la instalación de YuE en el contenedor."""
+    # Contenido detallado de xcodec_mini_infer dentro de inference/
+    xcodec_in_inference = f"{YUE_DIR}/inference/xcodec_mini_infer"
+    xcodec_deep = {}
+    if os.path.isdir(xcodec_in_inference):
+        xcodec_deep["contents"] = os.listdir(xcodec_in_inference)
+        models_in_xcodec = f"{xcodec_in_inference}/models"
+        if os.path.isdir(models_in_xcodec):
+            xcodec_deep["models_contents"] = os.listdir(models_in_xcodec)
+        else:
+            xcodec_deep["models_contents"] = "NO EXISTE"
+            # Check if it's an empty submodule
+            xcodec_deep["is_empty_submodule"] = len(os.listdir(xcodec_in_inference)) <= 1 and '.git' in os.listdir(xcodec_in_inference)
+    else:
+        xcodec_deep["contents"] = "NO EXISTE"
+
     result = {
         "yue_dir": {"path": YUE_DIR, "exists": os.path.isdir(YUE_DIR)},
         "yue_contents": os.listdir(YUE_DIR) if os.path.isdir(YUE_DIR) else [],
@@ -258,14 +294,11 @@ def diagnose_yue():
             "is_symlink": os.path.islink(f"{YUE_DIR}/models"),
             "target": os.readlink(f"{YUE_DIR}/models") if os.path.islink(f"{YUE_DIR}/models") else None,
         },
-        "xcodec_models": {
-            "exists": os.path.isdir(f"{YUE_DIR}/xcodec_mini_infer/models"),
-            "contents": os.listdir(f"{YUE_DIR}/xcodec_mini_infer/models") if os.path.isdir(f"{YUE_DIR}/xcodec_mini_infer/models") else [],
-        },
-        "xcodec_dir": {
+        "xcodec_at_root": {
             "exists": os.path.isdir(f"{YUE_DIR}/xcodec_mini_infer"),
             "contents": os.listdir(f"{YUE_DIR}/xcodec_mini_infer") if os.path.isdir(f"{YUE_DIR}/xcodec_mini_infer") else [],
         },
+        "xcodec_in_inference": xcodec_deep,
         "inference_dir": {
             "exists": os.path.isdir(f"{YUE_DIR}/inference"),
             "contents": os.listdir(f"{YUE_DIR}/inference") if os.path.isdir(f"{YUE_DIR}/inference") else [],
@@ -273,15 +306,18 @@ def diagnose_yue():
         "all_models_dirs": glob.glob(f"{YUE_DIR}/**/models", recursive=True),
         "infer_script": find_yue_script(),
     }
-    # Test de importación
+    # Test de importación con múltiples rutas
     try:
         import sys
-        sys.path.insert(0, YUE_DIR)
-        sys.path.insert(0, f"{YUE_DIR}/xcodec_mini_infer")
+        test_paths = [YUE_DIR, f"{YUE_DIR}/xcodec_mini_infer", xcodec_in_inference]
+        for p in test_paths:
+            if p not in sys.path and os.path.isdir(p):
+                sys.path.insert(0, p)
         from models.soundstream_hubert_new import SoundStream
         result["import_test"] = "✅ SUCCESS"
     except ImportError as e:
         result["import_test"] = f"❌ FAILED: {e}"
+        result["sys_path"] = [p for p in sys.path if 'YuE' in p or 'models' in p]
     return result
 
 
