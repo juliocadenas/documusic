@@ -92,13 +92,22 @@ def _patch_infer_py():
                 logger.info(f"[Startup] infer.py: agregado attn_implementation='eager' a from_pretrained en pos {start}")
 
         # 3. Parchar torchaudio.save para usar soundfile como fallback (torchcodec no instalado)
-        if 'torchaudio_save_patched' not in content:
-            # Inject monkey-patch after the first 'import torchaudio' line
+        if 'torchaudio_save_patched_v2' not in content:
+            # Remove old patch if present
+            if 'torchaudio_save_patched' in content:
+                old_patch_start = content.find('# === DOCUMUSIC PATCH')
+                if old_patch_start != -1:
+                    old_patch_end = content.find('# torchaudio_save_patched = True', old_patch_start)
+                    if old_patch_end != -1:
+                        old_patch_end = content.find('\n', old_patch_end) + 1
+                        content = content[:old_patch_start] + content[old_patch_end:]
+                        logger.info("[Startup] infer.py: removed old torchaudio patch")
+
             torchaudio_import = "import torchaudio"
             if torchaudio_import in content:
                 patch_code = """
 
-# === DOCUMUSIC PATCH: torchaudio.save fallback a soundfile ===
+# === DOCUMUSIC PATCH v2: torchaudio.save fallback a soundfile ===
 import torchaudio as _ta_orig
 _ta_original_save = _ta_orig.save
 def _safe_ta_save(filepath, src, sample_rate, **kwargs):
@@ -110,16 +119,18 @@ def _safe_ta_save(filepath, src, sample_rate, **kwargs):
         wav_np = src.squeeze().cpu().numpy()
         if wav_np.ndim > 1:
             wav_np = wav_np.T
-        sf.write(str(filepath), wav_np, sample_rate, subtype='PCM_16')
+        _fp = str(filepath)
+        if not _fp.endswith('.wav'):
+            _fp = _fp.rsplit('.', 1)[0] + '.wav'
+        sf.write(_fp, wav_np, sample_rate, format='WAV', subtype='PCM_16')
 _ta_orig.save = _safe_ta_save
-# torchaudio_save_patched = True
+# torchaudio_save_patched_v2 = True
 """
-                # Insert after the first 'import torchaudio' line
                 idx = content.find(torchaudio_import)
                 end_of_line = content.find('\n', idx)
                 content = content[:end_of_line + 1] + patch_code + content[end_of_line + 1:]
                 patched = True
-                logger.info("[Startup] infer.py: ✅ patched torchaudio.save with soundfile fallback")
+                logger.info("[Startup] infer.py: ✅ patched torchaudio.save with soundfile fallback v2")
 
         if patched and content != original:
             with open(infer_py, 'w') as f:
