@@ -311,8 +311,20 @@ def _build_inference_cmd(tmp_dir: str, output_path: str, yue_script: str, seed: 
     """Build the YuE inference command with optimized parameters (Fase 0.1)."""
     yue_inference_dir = os.path.dirname(yue_script) if "inference" in yue_script else "/opt/YuE/inference"
 
+    # Determinar el CWD y la ruta relativa del script.
+    # Usar /opt/YuE como CWD para que Python encuentre el paquete 'models/'
+    # que está en /opt/YuE/models/ (no en /opt/YuE/inference/models/).
+    yue_root = "/opt/YuE"
+    if os.path.isdir(yue_root):
+        # Ruta relativa del script desde la raíz de YuE
+        script_rel = os.path.relpath(yue_script, yue_root)  # e.g. "inference/infer.py"
+        cwd = yue_root
+    else:
+        script_rel = "infer.py"
+        cwd = yue_inference_dir
+
     cmd = [
-        "python3", "infer.py",
+        "python3", script_rel,
         "--stage1_model", f"{MODELS_DIR}/YuE-s1",
         "--stage2_model", f"{MODELS_DIR}/YuE-s2",
         "--genre_txt", f"{tmp_dir}/style.txt",
@@ -344,7 +356,7 @@ def _build_inference_cmd(tmp_dir: str, output_path: str, yue_script: str, seed: 
             cmd.extend(["--basic_model_config", default_config])
             cmd.extend(["--resume_path", default_ckpt])
 
-    return cmd, yue_inference_dir
+    return cmd, cwd
 
 
 def _get_env(yue_inference_dir: str) -> dict:
