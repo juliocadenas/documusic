@@ -65,10 +65,23 @@ def _ensure_models_available():
         logger.info(f"[Startup] ✅ models/ ya existe con contenido real en {models_dir}")
         return
 
-    # 2. Descargar desde Hugging Face
+    # 2. Limpiar archivos basura (descargas fallidas con "404: Not Found")
     logger.info(f"[Startup] ⚠️ models/ no encontrado o vacío, descargando desde Hugging Face...")
-
     os.makedirs(models_dir, exist_ok=True)
+
+    # Limpiar archivos < 100 bytes (probablemente respuestas 404)
+    for f in os.listdir(models_dir):
+        fpath = os.path.join(models_dir, f)
+        if os.path.isfile(fpath) and os.path.getsize(fpath) < 100:
+            logger.info(f"[Startup] Limpiando archivo basura: {f} ({os.path.getsize(fpath)} bytes)")
+            os.remove(fpath)
+
+    # Crear __init__.py válido
+    init_file = os.path.join(models_dir, "__init__.py")
+    if not os.path.exists(init_file) or os.path.getsize(init_file) < 10:
+        with open(init_file, 'w') as f:
+            f.write("")
+        logger.info(f"[Startup] __init__.py creado")
 
     # Hugging Face resolve URLs para el repo m-a-p/xcodec_mini_infer
     hf_base = "https://huggingface.co/m-a-p/xcodec_mini_infer/resolve/main"
