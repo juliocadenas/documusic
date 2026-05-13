@@ -36,62 +36,78 @@ os.makedirs("/app/tmp", exist_ok=True)
 
 app.mount("/api/outputs", StaticFiles(directory=OUTPUT_DIR), name="outputs")
 
+def _download_file(url: str, dest: str) -> bool:
+    """Descarga un archivo desde URL. Retorna True si tuvo éxito."""
+    try:
+        result = subprocess.run(
+            ["curl", "-sL", "-o", dest, url],
+            capture_output=True, text=True, timeout=60
+        )
+        if result.returncode == 0 and os.path.exists(dest) and os.path.getsize(dest) > 0:
+            return True
+        # Fallback con wget
+        result = subprocess.run(
+            ["wget", "-q", "-O", dest, url],
+            capture_output=True, text=True, timeout=60
+        )
+        return result.returncode == 0 and os.path.exists(dest) and os.path.getsize(dest) > 0
+    except Exception as e:
+        logger.error(f"[Startup] Error descargando {url}: {e}")
+        return False
+
+
 def _ensure_models_available():
     """
     Garantiza que el paquete 'models' sea importable.
-    Descarga xcodec_mini_infer desde GitHub si el submódulo está vacío.
+    Descarga los archivos de xcodec_mini_infer desde GitHub raw URLs.
     Funciona en caliente — no requiere rebuild de Docker.
     """
     xcodec_in_inference = f"{YUE_DIR}/inference/xcodec_mini_infer"
-    xcodec_at_root = f"{YUE_DIR}/xcodec_mini_infer"
-    xcodec_url = "https://github.com/multimodal-art-projection/xcodec_mini_infer.git"
 
-    # 1. Verificar si models/ ya existe en alguna ubicación
-    for xcodec_path in [xcodec_in_inference, xcodec_at_root]:
-        models_dir = f"{xcodec_path}/models"
-        if os.path.isdir(models_dir) and os.listdir(models_dir):
-            logger.info(f"[Startup] ✅ models/ ya existe en {models_dir}")
-            return
+    # 1. Verificar si models/ ya existe y tiene contenido
+    models_dir = f"{xcodec_in_inference}/models"
+    if os.path.isdir(models_dir) and os.listdir(models_dir):
+        logger.info(f"[Startup] ✅ models/ ya existe en {models_dir}")
+        return
 
-    # 2. El submódulo está vacío — clonar xcodec_mini_infer directamente
-    logger.info(f"[Startup] ⚠️ xcodec_mini_infer vacío, clonando desde GitHub...")
+    # 2. Intentar git clone primero (por si tiene acceso)
+    logger.info(f"[Startup] ⚠️ models/ no encontrado, intentando descargar...")
 
-    # Intentar en /opt/YuE/inference/xcodec_mini_infer primero
-    target_path = xcodec_in_inference if os.path.isdir(f"{YUE_DIR}/inference") else xcodec_at_root
+    # Recrear el directorio si fue borrado
+    os.makedirs(xcodec_in_inference, exist_ok=True)
+    os.makedirs(f"{xcodec_in_inference}/models", exist_ok=True)
+    os.makedirs(f"{xcodec_in_inference}/final_ckpt", exist_ok=True)
 
-    try:
-        # Remover directorio vacío si existe
-        if os.path.isdir(target_path) and not os.listdir(target_path):
-            os.rmdir(target_path)
-            logger.info(f"[Startup] Removido dir vacío: {target_path}")
-        elif os.path.isdir(target_path):
-            # Renombrar el existente
-            import shutil
-            shutil.rmtree(target_path, ignore_errors=True)
-            logger.info(f"[Startup] Removido dir existente: {target_path}")
+    # 3. Descargar archivos desde GitHub raw URLs (repo público de YuE)
+    base_url = "https://raw.githubusercontent.com/multimodal-art-projection/YuE/main/inference/xcodec_mini_infer"
 
-        result = subprocess.run(
-            ["git", "clone", xcodec_url, target_path],
-            capture_output=True, text=True, timeout=300
-        )
-        logger.info(f"[Startup] git clone stdout: {result.stdout[-500:] if result.stdout else 'empty'}")
-        if result.returncode != 0:
-            logger.error(f"[Startup] git clone stderr: {result.stderr[-500:] if result.stderr else 'empty'}")
+    files_to_download = {
+        "models/soundstream_hubert_new.py": f"{base_url}/models/soundstream_hubert_new.py",
+        "models/__init__.py": f"{base_url}/models/__init__.py",
+        "models/encodec.py": f"{base_url}/models/encodec.py",
+        "models/vencodec.py": f"{base_url}/models/vencodec.py",
+        "models/vencodec_utils.py": f"{base_url}/models/vencodec_utils.py",
+    }
+
+    success_count = 0
+    for rel_path, url in files_to_download.items():
+        dest = f"{xcodec_in_inference}/{rel_path}"
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        logger.info(f"[Startup] Descargando {rel_path}...")
+        if _download_file(url, dest):
+            success_count += 1
+            logger.info(f"[Startup] ✅ {rel_path} descargado ({os.path.getsize(dest)} bytes)")
         else:
-            logger.info(f"[Startup] ✅ xcodec_mini_infer clonado en {target_path}")
-    except subprocess.TimeoutExpired:
-        logger.error("[Startup] ❌ git clone timeout (5 min)")
-    except Exception as e:
-        logger.error(f"[Startup] ❌ Error clonando: {e}")
+            logger.warning(f"[Startup] ⚠️ No se pudo descargar {rel_path}")
 
-    # 3. Verificar que models/ existe ahora
-    models_dir = f"{target_path}/models"
-    if os.path.isdir(models_dir):
-        contents = os.listdir(models_dir)
-        logger.info(f"[Startup] ✅ models/ contiene: {contents}")
+    # 4. Verificar que el archivo crítico existe
+    critical_file = f"{xcodec_in_inference}/models/soundstream_hubert_new.py"
+    if os.path.exists(critical_file) and os.path.getsize(critical_file) > 0:
+        logger.info(f"[Startup] ✅ soundstream_hubert_new.py descargado correctamente")
+        logger.info(f"[Startup] ✅ models/ contiene: {os.listdir(models_dir)}")
     else:
-        logger.error(f"[Startup] ❌ models/ aún no existe en {target_path}")
-        logger.info(f"[Startup] Contenido de {target_path}: {os.listdir(target_path) if os.path.isdir(target_path) else 'NO EXISTE'}")
+        logger.error(f"[Startup] ❌ No se pudo descargar soundstream_hubert_new.py")
+        logger.error(f"[Startup] El contenedor no tiene acceso a GitHub. Se requiere rebuild con red.")
 
 
 # 🐕 Start GPU Watchdog on startup
