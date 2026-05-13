@@ -61,104 +61,101 @@ def _ensure_models_available():
     # 1. Verificar si models/ ya existe y tiene contenido real
     models_dir = f"{xcodec_in_inference}/models"
     critical_file = f"{models_dir}/soundstream_hubert_new.py"
+    modules_dir = f"{xcodec_in_inference}/modules"
 
-    # SIEMPRE limpiar __init__.py basura (se hace ANTES del early return)
+    # Check if everything is already in place
+    if (os.path.exists(critical_file) and os.path.getsize(critical_file) > 100
+            and os.path.isdir(modules_dir) and os.listdir(modules_dir)):
+        logger.info(f"[Startup] ✅ xcodec_mini_infer completo en {xcodec_in_inference}")
+        return
+
+    # SIEMPRE limpiar __init__.py basura
     init_file = os.path.join(models_dir, "__init__.py")
     if os.path.exists(init_file) and os.path.getsize(init_file) < 100:
         try:
             with open(init_file, 'r') as f:
                 content = f.read().strip()
             if '404' in content or 'Not Found' in content or len(content) < 5:
-                logger.info(f"[Startup] Limpiando __init__.py basura: '{content[:50]}'")
+                logger.info(f"[Startup] Limpiando __init__.py basura")
                 with open(init_file, 'w') as f:
                     f.write("")
         except Exception:
             with open(init_file, 'w') as f:
                 f.write("")
 
-    # Siempre asegurar que __init__.py existe
-    if not os.path.exists(init_file):
-        os.makedirs(models_dir, exist_ok=True)
-        with open(init_file, 'w') as f:
-            f.write("")
+    # Estrategia principal: git clone completo desde Hugging Face
+    logger.info(f"[Startup] 🔄 Clonando xcodec_mini_infer completo desde Hugging Face...")
+    try:
+        import shutil
+        shutil.rmtree(xcodec_in_inference, ignore_errors=True)
+        result = subprocess.run(
+            ["git", "clone", "https://huggingface.co/m-a-p/xcodec_mini_infer", xcodec_in_inference],
+            capture_output=True, text=True, timeout=300
+        )
+        if result.returncode == 0:
+            logger.info(f"[Startup] ✅ Clone exitoso. Contenido: {os.listdir(xcodec_in_inference)}")
+            if os.path.isdir(models_dir):
+                logger.info(f"[Startup] ✅ models/: {os.listdir(models_dir)}")
+            if os.path.isdir(modules_dir):
+                logger.info(f"[Startup] ✅ modules/: {os.listdir(modules_dir)}")
+            return
+        else:
+            logger.error(f"[Startup] ❌ Clone falló: {result.stderr[:300]}")
+    except subprocess.TimeoutExpired:
+        logger.error("[Startup] ❌ Clone timeout")
+    except Exception as e:
+        logger.error(f"[Startup] ❌ Clone error: {e}")
 
-    if os.path.exists(critical_file) and os.path.getsize(critical_file) > 100:
-        logger.info(f"[Startup] ✅ models/ ya existe con contenido real en {models_dir}")
-        return
-
-    # 2. Descargar desde Hugging Face
-    logger.info(f"[Startup] ⚠️ models/ no encontrado o vacío, descargando desde Hugging Face...")
+    # Fallback: descarga individual de archivos críticos
+    logger.info(f"[Startup] ⚠️ Fallback: descarga individual...")
     os.makedirs(models_dir, exist_ok=True)
 
-    # Limpiar archivos < 100 bytes (probablemente respuestas 404)
+    # Limpiar archivos < 100 bytes
     for f in os.listdir(models_dir):
         fpath = os.path.join(models_dir, f)
         if os.path.isfile(fpath) and os.path.getsize(fpath) < 100:
-            logger.info(f"[Startup] Limpiando archivo basura: {f} ({os.path.getsize(fpath)} bytes)")
             os.remove(fpath)
 
-    # Hugging Face resolve URLs para el repo m-a-p/xcodec_mini_infer
     hf_base = "https://huggingface.co/m-a-p/xcodec_mini_infer/resolve/main"
 
-    # GitHub raw URLs como fallback (desde el fork/commit del submódulo)
-    gh_base = "https://raw.githubusercontent.com/multimodal-art-projection/xcodec_mini_infer/main"
+    # Descargar todos los archivos Python necesarios
+    files_to_download = []
+    for subdir in ["models", "modules"]:
+        sd = f"{xcodec_in_inference}/{subdir}"
+        if os.path.isdir(sd):
+            for f in os.listdir(sd):
+                if f.endswith('.py') and os.path.getsize(os.path.join(sd, f)) < 50:
+                    files_to_download.append(f"{subdir}/{f}")
 
-    # Solo descargar archivos que existen en HuggingFace (NO __init__.py, se crea después)
-    files_to_download = [
-        "models/soundstream_hubert_new.py",
-    ]
+    # Si no hay archivos que reparar, descargar los conocidos
+    if not files_to_download:
+        files_to_download = [
+            "models/soundstream_hubert_new.py",
+            "modules/seanet.py",
+        ]
 
-    success_count = 0
     for rel_path in files_to_download:
         dest = f"{xcodec_in_inference}/{rel_path}"
         os.makedirs(os.path.dirname(dest), exist_ok=True)
+        url = f"{hf_base}/{rel_path}"
+        logger.info(f"[Startup] Descargando {rel_path}...")
+        if _download_file(url, dest, min_size=50):
+            logger.info(f"[Startup] ✅ {rel_path} ({os.path.getsize(dest)} bytes)")
+        else:
+            logger.warning(f"[Startup] ⚠️ Falló {rel_path}")
 
-        # Intentar Hugging Face primero, luego GitHub
-        urls = [
-            f"{hf_base}/{rel_path}",
-            f"{gh_base}/{rel_path}",
-        ]
+    # Asegurar __init__.py en models/ y modules/
+    for subdir in ["models", "modules"]:
+        init = f"{xcodec_in_inference}/{subdir}/__init__.py"
+        if not os.path.exists(init) or os.path.getsize(init) < 5:
+            with open(init, 'w') as f:
+                f.write("")
 
-        downloaded = False
-        for url in urls:
-            logger.info(f"[Startup] Intentando {url}...")
-            if _download_file(url, dest, min_size=50):
-                success_count += 1
-                logger.info(f"[Startup] ✅ {rel_path} descargado ({os.path.getsize(dest)} bytes) desde {url}")
-                downloaded = True
-                break
-
-        if not downloaded:
-            logger.warning(f"[Startup] ⚠️ No se pudo descargar {rel_path} desde ninguna fuente")
-
-    # Crear __init__.py válido DESPUÉS de las descargas (para no ser sobrescrito)
-    init_file = os.path.join(models_dir, "__init__.py")
-    with open(init_file, 'w') as f:
-        f.write("")
-    logger.info(f"[Startup] __init__.py creado/limpiado")
-
-    # 3. Verificar resultado
+    # Verificar resultado
     if os.path.exists(critical_file) and os.path.getsize(critical_file) > 100:
-        logger.info(f"[Startup] ✅ soundstream_hubert_new.py OK ({os.path.getsize(critical_file)} bytes)")
-        logger.info(f"[Startup] ✅ models/ contiene: {os.listdir(models_dir)}")
+        logger.info(f"[Startup] ✅ soundstream_hubert_new.py OK")
     else:
-        logger.error(f"[Startup] ❌ Falló la descarga de models/")
-        # Último recurso: intentar git clone con la URL de Hugging Face
-        logger.info(f"[Startup] 🔄 Último intento: git clone desde Hugging Face...")
-        try:
-            import shutil
-            shutil.rmtree(xcodec_in_inference, ignore_errors=True)
-            result = subprocess.run(
-                ["git", "clone", "https://huggingface.co/m-a-p/xcodec_mini_infer", xcodec_in_inference],
-                capture_output=True, text=True, timeout=300
-            )
-            if result.returncode == 0:
-                logger.info(f"[Startup] ✅ Clone desde Hugging Face exitoso")
-                logger.info(f"[Startup] Contenido: {os.listdir(xcodec_in_inference)}")
-            else:
-                logger.error(f"[Startup] ❌ Clone falló: {result.stderr[:300]}")
-        except Exception as e:
-            logger.error(f"[Startup] ❌ Último intento falló: {e}")
+        logger.error(f"[Startup] ❌ No se pudo completar la descarga de xcodec_mini_infer")
 
 
 # 🐕 Start GPU Watchdog on startup
