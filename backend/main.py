@@ -32,6 +32,9 @@ app.add_middleware(
 OUTPUT_DIR = "/app/outputs"
 YUE_DIR = "/opt/YuE"
 MODELS_DIR = "/app/models"
+ACESTEP_DIR = "/opt/ACE-Step"
+ACESTEP_MODEL_ID = "STEPFUN-IO/ACE-Step-v1.5-3.5B"
+ACESTEP_MODEL_DIR = f"{MODELS_DIR}/ACE-Step-v1.5"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs("/app/tmp", exist_ok=True)
 
@@ -348,6 +351,77 @@ def _ensure_models_available():
         logger.error(f"[Startup] ❌ No se pudo completar la descarga de xcodec_mini_infer")
 
 
+# ============================================================
+# ACE-Step 1.5 — Setup (clonar + instalar + descargar modelo)
+# ============================================================
+def _ensure_acestep_available() -> bool:
+    """Ensure ACE-Step repo is cloned, deps installed, and model weights downloaded."""
+    ace_available = False
+
+    # 1. Check if ACE-Step source code exists
+    if not os.path.exists(f"{ACESTEP_DIR}/acestep"):
+        logger.info("[Startup] 🔧 Clonando ACE-Step desde GitHub...")
+        try:
+            subprocess.run(
+                ["git", "clone", "https://github.com/ace-step/ACE-Step.git", ACESTEP_DIR],
+                check=True, timeout=180, capture_output=True, text=True
+            )
+            logger.info("[Startup] ✅ ACE-Step clonado")
+        except Exception as e:
+            logger.warning(f"[Startup] ⚠️ No se pudo clonar ACE-Step: {e}")
+            return False
+    else:
+        logger.info("[Startup] ✅ ACE-Step repo encontrado")
+        ace_available = True
+
+    # 2. Check if ACE-Step is importable (pip install may be needed after container recreate)
+    try:
+        import acestep  # noqa: F401
+        logger.info("[Startup] ✅ ACE-Step importable")
+        ace_available = True
+    except ImportError:
+        logger.info("[Startup] 🔧 Instalando ACE-Step (pip install -e .)...")
+        try:
+            result = subprocess.run(
+                ["pip3", "install", "-e", ACESTEP_DIR],
+                capture_output=True, text=True, timeout=300
+            )
+            if result.returncode == 0:
+                logger.info("[Startup] ✅ ACE-Step instalado correctamente")
+                ace_available = True
+            else:
+                logger.warning(f"[Startup] ⚠️ Error instalando ACE-Step: {result.stderr[-500:]}")
+                return False
+        except Exception as e:
+            logger.warning(f"[Startup] ⚠️ No se pudo instalar ACE-Step: {e}")
+            return False
+
+    # 3. Install additional dependencies that ACE-Step might need
+    try:
+        subprocess.run(
+            ["pip3", "install", "diffusers", "probables", "--quiet"],
+            capture_output=True, text=True, timeout=120
+        )
+    except Exception:
+        pass  # Non-critical
+
+    # 4. Download model weights from HuggingFace if not present
+    if ace_available and not os.path.exists(f"{ACESTEP_MODEL_DIR}/config.json"):
+        logger.info(f"[Startup] 🔧 Descargando modelo {ACESTEP_MODEL_ID} (~7GB, primera vez)...")
+        try:
+            from huggingface_hub import snapshot_download
+            snapshot_download(
+                repo_id=ACESTEP_MODEL_ID,
+                local_dir=ACESTEP_MODEL_DIR,
+            )
+            logger.info("[Startup] ✅ Modelo ACE-Step descargado")
+        except Exception as e:
+            logger.warning(f"[Startup] ⚠️ No se pudo descargar modelo ACE-Step: {e}")
+            # Model will be downloaded on first generation instead
+
+    return ace_available
+
+
 # 🐕 Start GPU Watchdog on startup
 @app.on_event("startup")
 async def startup_event():
@@ -363,6 +437,11 @@ async def startup_event():
         logger.warning(f"[Startup] No se pudo configurar GPU: {e}")
     start_watchdog()
     _ensure_models_available()
+    ace_available = _ensure_acestep_available()
+    if ace_available:
+        logger.info("[Startup] ✅ ACE-Step 1.5 disponible como segunda opción de modelo")
+    else:
+        logger.info("[Startup] ⚠️ ACE-Step no disponible — solo YuE estará activo")
     logger.info("[Startup] 🐕 GPU Watchdog iniciado — monitoreando VRAM y temperatura")
 
 jobs = {}
@@ -517,12 +596,17 @@ def status():
         "gpu": torch.cuda.get_device_name(0) if gpu_ok else "RTX 5080",
         "vram_free": f"{torch.cuda.mem_get_info()[0] // 1024 ** 2} MB" if gpu_ok else "16 GB",
         "yue_ready": os.path.exists(f"{MODELS_DIR}/YuE-s1"),
+        "ace_step_ready": os.path.exists(f"{ACESTEP_DIR}/acestep"),
         "yue_script": yue_script,
         "yue_files": yue_files[:20],
         "model_files": model_files,
         "diagnostics": diagnostics,
         "variant_config": VARIANT_CONFIG,
         "yue_params": YUE_PARAMS,
+        "models_available": {
+            "yue": os.path.exists(f"{MODELS_DIR}/YuE-s1") and yue_script is not None,
+            "ace_step": os.path.exists(f"{ACESTEP_DIR}/acestep"),
+        },
     }
 
 
@@ -581,6 +665,7 @@ def diagnose_yue():
 
 @app.post("/api/generate")
 async def generate(req: dict, background_tasks: BackgroundTasks):
+    model = req.get("model", "yue")
     lyrics = req.get("lyrics", "")
     style_prompt = req.get("style_prompt", "")
     num_variants = req.get("num_variants", VARIANT_CONFIG["count"])
@@ -599,6 +684,80 @@ async def generate(req: dict, background_tasks: BackgroundTasks):
     # Clamp variants to 1-3
     num_variants = max(1, min(3, int(num_variants)))
 
+    # === Common prompt processing ===
+    embedded_style = extract_style_from_lyrics(lyrics)
+    if embedded_style and not style_prompt:
+        style_prompt = embedded_style
+    elif embedded_style and style_prompt:
+        style_prompt = f"{style_prompt}, {embedded_style}"
+
+    # Fallback de estilo si sigue vacío
+    if not style_prompt.strip():
+        style_prompt = "pop rock, melodic male vocal, energetic"
+
+    # 🎨 PROMPT ENRICHMENT
+    original_prompt = style_prompt
+    style_prompt = enrich_style_prompt(style_prompt)
+    logger.info(f"[Generate] Prompt enriquecido: '{original_prompt}' → '{style_prompt}'")
+
+    # Sanitizar la letra
+    clean_lyrics = sanitize_lyrics(lyrics)
+
+    # Generate seeds
+    seeds = []
+    for i in range(num_variants):
+        if VARIANT_CONFIG["seeds"] == "random":
+            seeds.append(random.randint(1, 999999))
+        else:
+            seeds.append(42 + i)
+
+    # ============================================================
+    # === ACE-STEP DISPATCH ===
+    # ============================================================
+    if model == "ace-step":
+        if not os.path.exists(ACESTEP_DIR) or not os.path.exists(f"{ACESTEP_DIR}/acestep"):
+            return {
+                "status": "error",
+                "message": "ACE-Step no está instalado en el servidor. Contacta al administrador.",
+                "model_status": "unavailable",
+            }
+
+        logger.info(f"[Generate] Job {job_id} | Model: ACE-Step 1.5 | Style: '{style_prompt}' | Variants: {num_variants}")
+
+        jobs[job_id] = {
+            "status": "generating",
+            "audio_url": None,
+            "logs": [
+                f"🎯 Generando {num_variants} variante(s) con ACE-Step 1.5",
+                f"Seeds: {seeds}",
+                f"Style: {style_prompt}",
+            ],
+            "variants": [],
+            "num_variants": num_variants,
+            "completed_variants": 0,
+            "seeds": seeds,
+            "model": "ace-step",
+        }
+
+        background_tasks.add_task(
+            run_acestep_inference,
+            job_id, clean_lyrics, style_prompt, seeds
+        )
+
+        return {
+            "status": "success",
+            "job_id": job_id,
+            "generated_lyrics": clean_lyrics,
+            "audio_url": None,
+            "message": f"🎵 Generando {num_variants} variante(s) con ACE-Step 1.5...",
+            "model_status": "generating",
+            "num_variants": num_variants,
+            "seeds": seeds,
+        }
+
+    # ============================================================
+    # === YuE PATH (default) ===
+    # ============================================================
     stage1_path = f"{MODELS_DIR}/YuE-s1"
     stage2_path = f"{MODELS_DIR}/YuE-s2"
     yue_script = find_yue_script()
@@ -620,51 +779,22 @@ async def generate(req: dict, background_tasks: BackgroundTasks):
             "model_status": "demo"
         }
 
-    # Extraer estilo embebido en la letra si no hay style_prompt explícito
-    embedded_style = extract_style_from_lyrics(lyrics)
-    if embedded_style and not style_prompt:
-        style_prompt = embedded_style
-    elif embedded_style and style_prompt:
-        style_prompt = f"{style_prompt}, {embedded_style}"
-
-    # Fallback de estilo si sigue vacío
-    if not style_prompt.strip():
-        style_prompt = "pop rock, melodic male vocal, energetic"
-
-    # 🎨 PROMPT ENRICHMENT: Transform short prompts into rich descriptions
-    # "American Country" → "American Country, warm male baritone, fiddle, pedal steel, Nashville..."
-    original_prompt = style_prompt
-    style_prompt = enrich_style_prompt(style_prompt)
-    logger.info(f"[Generate] Prompt enriquecido: '{original_prompt}' → '{style_prompt}'")
-
-    # Sanitizar la letra (eliminar tags de estilo, conservar solo secciones válidas)
-    clean_lyrics = sanitize_lyrics(lyrics)
-
-    logger.info(f"[Generate] Job {job_id} | Style: '{style_prompt}' | Variants: {num_variants} | Lyrics sections: {clean_lyrics.count('[')} tags")
-
-    # Generate seeds for each variant
-    seeds = []
-    for i in range(num_variants):
-        if VARIANT_CONFIG["seeds"] == "random":
-            seeds.append(random.randint(1, 999999))
-        else:
-            seeds.append(42 + i)
+    logger.info(f"[Generate] Job {job_id} | Model: YuE 7B | Style: '{style_prompt}' | Variants: {num_variants} | Lyrics sections: {clean_lyrics.count('[')} tags")
 
     # Initialize job with variant tracking
     jobs[job_id] = {
         "status": "generating",
         "audio_url": None,
-        "logs": [],
-        "variants": [],           # List of variant results
+        "logs": [
+            f"🎯 Generando {num_variants} variante(s) con seeds: {seeds}",
+            f"Style: {style_prompt}",
+        ],
+        "variants": [],
         "num_variants": num_variants,
         "completed_variants": 0,
         "seeds": seeds,
+        "model": "yue",
     }
-
-    jobs[job_id]["logs"] = [
-        f"🎯 Generando {num_variants} variante(s) con seeds: {seeds}",
-        f"Style: {style_prompt}",
-    ]
 
     background_tasks.add_task(
         run_yue_inference_multi,
@@ -1040,6 +1170,204 @@ def run_yue_inference(job_id: str, lyrics: str, style_prompt: str, yue_script: s
     run_yue_inference_multi(job_id, lyrics, style_prompt, yue_script, seeds=[42])
 
 
+# ============================================================
+# ACE-Step 1.5 — Inference via subprocess
+# ============================================================
+def run_acestep_inference(job_id: str, lyrics: str, style_prompt: str, seeds: list):
+    """
+    Run ACE-Step 1.5 inference via subprocess.
+    Generates multiple variants with different seeds, applies mastering to each.
+    """
+    try:
+        import time as _time
+
+        tmp_dir = f"/app/tmp/{job_id}"
+        os.makedirs(tmp_dir, exist_ok=True)
+
+        num_variants = len(seeds)
+        variant_results = []
+
+        for variant_idx, seed in enumerate(seeds):
+            variant_label = f"V{variant_idx + 1}/{num_variants}"
+            jobs[job_id]["logs"].append(f"🎵 ACE-Step: Iniciando variante {variant_label} (seed={seed})...")
+
+            variant_output = f"{OUTPUT_DIR}/{job_id}/v{variant_idx + 1}"
+            os.makedirs(variant_output, exist_ok=True)
+            output_wav = f"{variant_output}/raw.wav"
+
+            # Escape strings for safe embedding in Python script
+            safe_prompt = style_prompt.replace('\\', '\\\\').replace('"', '\\"').replace("'", "\\'").replace('\n', ' ')
+            safe_lyrics = lyrics.replace('\\', '\\\\').replace('"', '\\"').replace("'", "\\'").replace('\n', '\\n')
+
+            # Build inline inference script
+            infer_script = f'''
+import sys
+sys.path.insert(0, "{ACESTEP_DIR}")
+
+import torch
+print(f"CUDA available: {{torch.cuda.is_available()}}", flush=True)
+if torch.cuda.is_available():
+    print(f"GPU: {{torch.cuda.get_device_name(0)}}", flush=True)
+    print(f"VRAM: {{torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f}} GB", flush=True)
+
+# Import ACE-Step pipeline
+try:
+    from acestep.pipeline import ACEStepPipeline
+except ImportError as e:
+    print(f"Import error: {{e}}", flush=True)
+    # Try to find what's available
+    try:
+        import acestep
+        print(f"acestep dir: {{dir(acestep)}}", flush=True)
+    except:
+        pass
+    raise
+
+print("Loading ACE-Step model...", flush=True)
+pipeline = ACEStepPipeline(
+    checkpoint_dir="{ACESTEP_DIR}",
+    device="cuda" if torch.cuda.is_available() else "cpu",
+    torch_dtype=torch.float16,
+)
+
+print("Generating audio...", flush=True)
+result = pipeline(
+    prompt="{safe_prompt}",
+    lyrics="{safe_lyrics}",
+    duration=30.0,
+    num_inference_steps=60,
+    guidance_scale=7.0,
+    seed={seed},
+)
+
+print("Saving audio...", flush=True)
+import soundfile as sf
+import numpy as np
+
+audio = result["audio"]
+if hasattr(audio, 'cpu'):
+    audio = audio.cpu().numpy()
+if audio.ndim == 1:
+    audio = audio.reshape(1, -1)
+# soundfile expects (samples, channels)
+if audio.shape[0] < audio.shape[1]:
+    audio = audio.T
+sf.write("{output_wav}", audio, 44100)
+print("GENERATION_COMPLETE", flush=True)
+'''
+            script_path = f"{tmp_dir}/acestep_v{variant_idx}.py"
+            with open(script_path, 'w') as f:
+                f.write(infer_script)
+
+            # Run subprocess
+            env = os.environ.copy()
+            env["PYTHONPATH"] = f"{ACESTEP_DIR}:{env.get('PYTHONPATH', '')}"
+            env["CUDA_VISIBLE_DEVICES"] = "0"
+            env["PYTHONUNBUFFERED"] = "1"
+
+            logger.info(f"[ACE-Step] 🚀 Variant {variant_label} | Seed: {seed}")
+
+            process = subprocess.Popen(
+                ["python3", script_path],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                env=env,
+                bufsize=1,
+            )
+
+            jobs[job_id]["subprocess_pid"] = process.pid
+
+            for line in process.stdout:
+                clean_line = line.strip()
+                if clean_line:
+                    prefix = f"[ACE-{variant_label}]"
+                    jobs[job_id]["logs"].append(f"{prefix} {clean_line}")
+                    jobs[job_id]["last_log_time"] = _time.time()
+
+            process.wait()
+
+            if process.returncode == 0 and os.path.exists(output_wav):
+                # Apply mastering pipeline
+                jobs[job_id]["logs"].append(f"🎚️ Masterizando variante {variant_label}...")
+                final_path = _finalize_audio(output_wav, job_id, variant_idx)
+
+                if variant_idx == 0:
+                    audio_url = f"/outputs/{job_id}.mp3"
+                else:
+                    audio_url = f"/outputs/{job_id}_v{variant_idx + 1}.mp3"
+
+                from audio_master import get_audio_metrics
+                metrics = get_audio_metrics(final_path)
+
+                variant_results.append({
+                    "index": variant_idx,
+                    "seed": seed,
+                    "audio_url": audio_url,
+                    "duration": metrics.get("duration_seconds", 0),
+                    "file_size": metrics.get("file_size_bytes", 0),
+                    "lufs": metrics.get("lufs", 0),
+                })
+
+                jobs[job_id]["logs"].append(
+                    f"✅ ACE-Step variante {variant_label} lista: {metrics.get('duration_seconds', 0):.1f}s, "
+                    f"LUFS: {metrics.get('lufs', 0):.1f}"
+                )
+            else:
+                jobs[job_id]["logs"].append(f"❌ ACE-Step variante {variant_label} falló (code {process.returncode})")
+                variant_results.append({
+                    "index": variant_idx,
+                    "seed": seed,
+                    "audio_url": None,
+                    "error": f"Process failed with code {process.returncode}",
+                })
+
+            jobs[job_id]["completed_variants"] = variant_idx + 1
+
+        # All variants complete - select the best
+        jobs[job_id]["variants"] = variant_results
+        successful = [v for v in variant_results if v.get("audio_url")]
+
+        if successful:
+            best = max(
+                successful,
+                key=lambda v: (
+                    v.get("duration", 0),
+                    -abs(v.get("lufs", 0) - (-14)),
+                )
+            )
+
+            # Copy best variant as primary if not v1
+            if best["index"] != 0 and best.get("audio_url"):
+                import shutil
+                best_source = f"{OUTPUT_DIR}/{job_id}_v{best['index'] + 1}.mp3"
+                best_dest = f"{OUTPUT_DIR}/{job_id}.mp3"
+                if os.path.exists(best_source):
+                    shutil.copy2(best_source, best_dest)
+
+            primary_url = f"/outputs/{job_id}.mp3"
+            jobs[job_id].update({
+                "status": "done",
+                "audio_url": primary_url,
+                "best_variant": best["index"],
+            })
+            jobs[job_id]["logs"].append(
+                f"🏆 Mejor variante ACE-Step: V{best['index'] + 1} "
+                f"(duración: {best.get('duration', 0):.1f}s, LUFS: {best.get('lufs', 0):.1f})"
+            )
+            jobs[job_id]["logs"].append("✅ Generación ACE-Step completada.")
+        else:
+            jobs[job_id].update({
+                "status": "error",
+                "error": "Todas las variantes ACE-Step fallaron.",
+                "error_detail": "\n".join(v.get("error", "Unknown") for v in variant_results),
+            })
+
+    except Exception as e:
+        logger.error(f"[ACE-Step] ❌ Error crítico: {e}", exc_info=True)
+        jobs[job_id].update({"status": "error", "error": str(e)})
+
+
 @app.get("/api/job/{job_id}")
 def get_job(job_id: str):
     job = jobs.get(job_id, {"status": "not_found"})
@@ -1110,7 +1438,18 @@ def diagnostics():
         "cuda_available": torch.cuda.is_available(),
         "gpu_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
         "ffmpeg": {"exists": subprocess.run(["which", "ffmpeg"], capture_output=True).returncode == 0},
+        # ACE-Step checks
+        "acestep_dir": {"path": ACESTEP_DIR, "exists": os.path.exists(ACESTEP_DIR)},
+        "acestep_repo": {"path": f"{ACESTEP_DIR}/acestep", "exists": os.path.exists(f"{ACESTEP_DIR}/acestep")},
+        "acestep_model": {"path": ACESTEP_MODEL_DIR, "exists": os.path.exists(ACESTEP_MODEL_DIR)},
     }
+
+    # Check if acestep is importable
+    try:
+        import acestep
+        checks["acestep_importable"] = True
+    except ImportError:
+        checks["acestep_importable"] = False
 
     if os.path.exists(MODELS_DIR):
         checks["model_dir_contents"] = os.listdir(MODELS_DIR)
@@ -1118,6 +1457,9 @@ def diagnostics():
     inf_dir = f"{YUE_DIR}/inference"
     if os.path.exists(inf_dir):
         checks["yue_inference_contents"] = os.listdir(inf_dir)[:30]
+
+    if os.path.exists(ACESTEP_DIR):
+        checks["acestep_dir_contents"] = os.listdir(ACESTEP_DIR)[:20]
 
     all_ok = all(
         v.get("exists", v) if isinstance(v, dict) else v
@@ -1130,6 +1472,10 @@ def diagnostics():
         "checks": checks,
         "yue_params": YUE_PARAMS,
         "variant_config": VARIANT_CONFIG,
+        "models_available": {
+            "yue": os.path.exists(f"{MODELS_DIR}/YuE-s1") and find_yue_script() is not None,
+            "ace_step": os.path.exists(f"{ACESTEP_DIR}/acestep"),
+        },
     }
 
 
