@@ -482,9 +482,9 @@ VALID_SECTION_TAGS = {'verse', 'chorus', 'bridge', 'intro', 'outro'}
 # FASE 0.1: Parámetros de inferencia optimizados
 # ============================================================
 YUE_PARAMS = {
-    "max_new_tokens": 3000,       # Aumentado de 1500 → 3000 para canciones más largas (~60-90s audio)
-    "run_n_segments": 2,          # 2 segmentos (balance entre duración y VRAM)
-    "repetition_penalty": 1.1,    # Evitar loops
+    "max_new_tokens": 6000,       # Aumentado de 3000 → 6000 para canciones ~60-120s
+    "run_n_segments": 3,          # 3 segmentos para canción completa (verse + chorus + bridge)
+    "repetition_penalty": 1.2,    # Aumentado de 1.1 → 1.2 para más variedad
     "stage2_batch_size": 1,       # Reducido de 4 → 1 (crítico para VRAM)
     "rescale": True,              # Evitar clipping en la salida
 }
@@ -559,16 +559,34 @@ def sanitize_lyrics(lyrics: str) -> str:
     if not has_sections:
         lines = [l.strip() for l in formatted.split('\n') if l.strip()]
         if not lines:
-            lines = ["Docuplay music", "Our platform for learning"]
-        mid = max(1, len(lines) // 2)
+            # Default lyrics template — substantial enough for YuE to generate vocals
+            lines = [
+                "Walking down this dusty road, sunset painting sky of gold",
+                "Fences stretching mile on mile, this old land has got my soul",
+                "Daddy taught me how to ride, mama sang me lullabies",
+                "Country music in my blood, running deep as river tides",
+                "Oh, this heart beats country time",
+                "Steel guitar and whiskey wine",
+                "Front porch swings and firefly lights",
+                "Home is where the music shines",
+                "Grandpa's fiddle in the barn, weathered hands but fingers warm",
+                "Every note a memory, every song a family story",
+                "Oh, this heart beats country time",
+                "Steel guitar and whiskey wine",
+                "Front porch swings and firefly lights",
+                "Home is where the music shines",
+            ]
+        mid = max(1, len(lines) // 3)
         verse_lines = lines[:mid]
-        chorus_lines = lines[mid:] if len(lines) > mid else lines[:mid]
+        chorus_lines = lines[mid:mid*2] if len(lines) > mid else lines[:mid]
+        bridge_lines = lines[mid*2:] if len(lines) > mid*2 else []
         formatted = (
             '[verse]\n' + '\n'.join(verse_lines) + '\n\n' +
             '[chorus]\n' + '\n'.join(chorus_lines) + '\n\n'
         )
-        if len(lines) > mid * 2:
-            formatted += '[verse]\n' + '\n'.join(lines[mid * 2:]) + '\n\n'
+        if bridge_lines:
+            formatted += '[bridge]\n' + '\n'.join(bridge_lines) + '\n\n'
+        formatted += '[chorus]\n' + '\n'.join(chorus_lines) + '\n\n'
 
     return formatted.strip()
 
