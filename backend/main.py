@@ -574,7 +574,18 @@ def extract_style_from_lyrics(lyrics: str) -> str:
 @app.get("/")
 @app.get("/api")
 def status():
-    gpu_ok = torch.cuda.is_available()
+    # Safely check CUDA — wrap in try/except to survive CUDA crashes
+    gpu_ok = False
+    gpu_name = "RTX 5080"
+    vram_free = "N/A"
+    try:
+        gpu_ok = torch.cuda.is_available()
+        if gpu_ok:
+            gpu_name = torch.cuda.get_device_name(0)
+            vram_free = f"{torch.cuda.mem_get_info()[0] // 1024 ** 2} MB"
+    except Exception:
+        gpu_ok = False
+
     yue_script = find_yue_script()
     xcodec_config, xcodec_ckpt = find_xcodec_paths()
 
@@ -599,8 +610,8 @@ def status():
 
     return {
         "status": "Online",
-        "gpu": torch.cuda.get_device_name(0) if gpu_ok else "RTX 5080",
-        "vram_free": f"{torch.cuda.mem_get_info()[0] // 1024 ** 2} MB" if gpu_ok else "16 GB",
+        "gpu": gpu_name,
+        "vram_free": vram_free,
         "yue_ready": os.path.exists(f"{MODELS_DIR}/YuE-s1"),
         "ace_step_ready": os.path.exists(f"{ACESTEP_DIR}/acestep"),
         "yue_script": yue_script,
@@ -1220,11 +1231,13 @@ print(f"CUDA available: {{torch.cuda.is_available()}}", flush=True)
 if torch.cuda.is_available():
     print(f"GPU: {{torch.cuda.get_device_name(0)}}", flush=True)
     print(f"VRAM: {{torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f}} GB", flush=True)
+    torch.cuda.empty_cache()
+    print(f"VRAM after cleanup: {{torch.cuda.mem_get_info()[0] / 1024**2:.0f}} MB free", flush=True)
 
 # Import ACE-Step pipeline (correct module name)
 from acestep.pipeline_ace_step import ACEStepPipeline
 
-print("Loading ACE-Step model (first time downloads ~7GB)...", flush=True)
+print("Loading ACE-Step model (cpu_offload for VRAM safety)...", flush=True)
 pipeline = ACEStepPipeline(
     checkpoint_dir="{ACESTEP_MODEL_DIR}",
     device_id=0,
@@ -1232,27 +1245,40 @@ pipeline = ACEStepPipeline(
     cpu_offload=True,
 )
 
-print("Generating audio...", flush=True)
-output_paths = pipeline(
-    audio_duration=60.0,
-    prompt="{safe_prompt}",
-    lyrics="{safe_lyrics}",
-    infer_step=60,
-    guidance_scale=15.0,
-    scheduler_type="euler",
-    cfg_type="apg",
-    omega_scale=10.0,
-    manual_seeds=[{seed}],
-    guidance_interval=0.5,
-    guidance_interval_decay=0.0,
-    min_guidance_scale=3.0,
-    use_erg_tag=True,
-    use_erg_lyric=True,
-    use_erg_diffusion=True,
-    save_path="{output_wav}",
-)
+print("Generating audio (60s, this may take several minutes)...", flush=True)
+try:
+    output_paths = pipeline(
+        audio_duration=60.0,
+        prompt="{safe_prompt}",
+        lyrics="{safe_lyrics}",
+        infer_step=60,
+        guidance_scale=15.0,
+        scheduler_type="euler",
+        cfg_type="apg",
+        omega_scale=10.0,
+        manual_seeds=[{seed}],
+        guidance_interval=0.5,
+        guidance_interval_decay=0.0,
+        min_guidance_scale=3.0,
+        use_erg_tag=True,
+        use_erg_lyric=True,
+        use_erg_diffusion=True,
+        save_path="{output_wav}",
+    )
+except torch.cuda.CudaError as e:
+    print(f"CUDA ERROR during generation: {{e}}", flush=True)
+    torch.cuda.empty_cache()
+    sys.exit(2)
+except Exception as e:
+    print(f"ERROR during generation: {{e}}", flush=True)
+    sys.exit(1)
 
 print(f"Output paths: {{output_paths}}", flush=True)
+
+# Free VRAM immediately after generation
+if torch.cuda.is_available():
+    torch.cuda.empty_cache()
+    print(f"VRAM freed: {{torch.cuda.mem_get_info()[0] / 1024**2:.0f}} MB free", flush=True)
 
 # The pipeline saves the wav file directly via save_path
 # output_paths is a list: [wav_path, ..., input_params_json_path]
@@ -1290,6 +1316,8 @@ else:
             )
 
             jobs[job_id]["subprocess_pid"] = process.pid
+            ace_step_timeout = 600  # 10 minutes max per variant
+            start_time = _time.time()
 
             for line in process.stdout:
                 clean_line = line.strip()
@@ -1297,6 +1325,15 @@ else:
                     prefix = f"[ACE-{variant_label}]"
                     jobs[job_id]["logs"].append(f"{prefix} {clean_line}")
                     jobs[job_id]["last_log_time"] = _time.time()
+
+                # Check timeout
+                elapsed = _time.time() - start_time
+                if elapsed > ace_step_timeout:
+                    jobs[job_id]["logs"].append(
+                        f"[ACE-{variant_label}] TIMEOUT after {ace_step_timeout}s, killing process..."
+                    )
+                    process.kill()
+                    break
 
             process.wait()
 
