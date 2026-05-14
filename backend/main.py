@@ -1234,7 +1234,7 @@ pipeline = ACEStepPipeline(
 
 print("Generating audio...", flush=True)
 output_paths = pipeline(
-    audio_duration=30.0,
+    audio_duration=60.0,
     prompt="{safe_prompt}",
     lyrics="{safe_lyrics}",
     infer_step=60,
@@ -1244,6 +1244,7 @@ output_paths = pipeline(
     omega_scale=10.0,
     manual_seeds=[{seed}],
     guidance_interval=0.5,
+    guidance_interval_decay=0.0,
     min_guidance_scale=3.0,
     use_erg_tag=True,
     use_erg_lyric=True,
