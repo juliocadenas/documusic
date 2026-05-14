@@ -69,12 +69,16 @@ def _patch_infer_py():
             patched = True
             logger.info("[Startup] infer.py: flash_attention_2 → eager")
 
-        # 2. Agregar attn_implementation="eager" + load_in_8bit=True a from_pretrained()
+        # 2. Parchar from_pretrained() para 8-bit quantization + comentar model.to(device)
         import re
-        if 'load_in_8bit_applied' not in content:
-            matches = list(re.finditer(r'from_pretrained\(', content))
-            for m in matches:
+        if 'load_in_8bit_v2_applied' not in content:
+            # Find all AutoModelForCausalLM.from_pretrained(...) calls
+            fp_pattern = re.compile(r'AutoModelForCausalLM\.from_pretrained\(')
+            matches = list(fp_pattern.finditer(content))
+            # Process in reverse order to preserve offsets
+            for m in reversed(matches):
                 start = m.start()
+                # Find matching closing paren
                 depth = 0
                 end = start
                 for i in range(start, len(content)):
@@ -85,27 +89,40 @@ def _patch_infer_py():
                         if depth == 0:
                             end = i
                             break
-                call_text = content[start:end+1]
-                # Only patch AutoModelForCausalLM.from_pretrained (Stage1/Stage2 models)
-                # Skip codec model calls
-                if 'attn_implementation' not in call_text:
-                    new_call = content[start:end] + ', attn_implementation="eager")'
-                    content = content[:start] + new_call + content[end+1:]
+                call_block = content[start:end+1]
+                # Extract the first argument (model path variable, e.g. stage1_model)
+                first_arg_match = re.search(r'from_pretrained\(\s*\n?\s*(\w+)', call_block)
+                if not first_arg_match:
+                    continue
+                model_arg = first_arg_match.group(1)
+                # Build clean replacement call with 8-bit quantization
+                # Removes torch_dtype (ignored with load_in_8bit), old device_map, comments
+                new_call = (
+                    f'AutoModelForCausalLM.from_pretrained(\n'
+                    f'    {model_arg},\n'
+                    f'    attn_implementation="eager",\n'
+                    f'    load_in_8bit=True,\n'
+                    f'    device_map="auto",\n'
+                    f')'
+                )
+                content = content[:start] + new_call + content[end+1:]
+                patched = True
+                logger.info(f"[Startup] infer.py: patched from_pretrained({model_arg}) → 8-bit quantization")
+
+            # Comment out model.to(device) — incompatible with device_map="auto"
+            lines = content.split('\n')
+            new_lines = []
+            for line in lines:
+                stripped = line.lstrip()
+                if re.match(r'model\s*=\s*model\.to\(|model\.to\(', stripped) and '# [DocuMusic]' not in line:
+                    indent = line[:len(line) - len(stripped)]
+                    new_lines.append(f'{indent}# {stripped} # [DocuMusic] incompatible with device_map="auto"')
                     patched = True
-                    logger.info(f"[Startup] infer.py: agregado attn_implementation='eager'")
-                # Re-find the call since content changed
-                # Add load_in_8bit=True and device_map="auto" for quantization
-                new_start = content.find(call_text[:30])
-                if new_start != -1:
-                    new_end_match = content.find(')', new_start)
-                    if new_end_match != -1:
-                        current_call = content[new_start:new_end_match+1]
-                        if 'load_in_8bit' not in current_call and 'AutoModelForCausalLM' in content[max(0,new_start-200):new_start]:
-                            replacement = content[new_start:new_end_match] + ', load_in_8bit=True, device_map="auto")'
-                            content = content[:new_start] + replacement + content[new_end_match+1:]
-                            patched = True
-                            logger.info("[Startup] infer.py: agregado load_in_8bit=True, device_map='auto'")
-            content += "\n# load_in_8bit_applied = True\n"
+                else:
+                    new_lines.append(line)
+            content = '\n'.join(new_lines)
+
+            content += "\n# load_in_8bit_v2_applied = True\n"
 
         # 3. Parchar torchaudio.save para usar soundfile como fallback (torchcodec no instalado)
         if 'torchaudio_patched_v3' not in content:
