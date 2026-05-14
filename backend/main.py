@@ -69,9 +69,9 @@ def _patch_infer_py():
             patched = True
             logger.info("[Startup] infer.py: flash_attention_2 → eager")
 
-        # 2. Parchar from_pretrained() para 8-bit quantization + comentar model.to(device)
+        # 2. Parchar from_pretrained() con attn_implementation="eager" (SIN 8-bit para mejor calidad)
         import re
-        if 'load_in_8bit_v3_applied' not in content:
+        if 'yue_no_quant_v1_applied' not in content:
             # Find all AutoModelForCausalLM.from_pretrained(...) calls
             fp_pattern = re.compile(r'AutoModelForCausalLM\.from_pretrained\(')
             matches = list(fp_pattern.finditer(content))
@@ -95,34 +95,34 @@ def _patch_infer_py():
                 if not first_arg_match:
                     continue
                 model_arg = first_arg_match.group(1)
-                # Build clean replacement call with 8-bit quantization
-                # Removes torch_dtype (ignored with load_in_8bit), old device_map, comments
+                # Build clean replacement call WITHOUT 8-bit quantization
+                # Uses torch.bfloat16 for best quality on RTX 5080
                 new_call = (
                     f'AutoModelForCausalLM.from_pretrained(\n'
                     f'    {model_arg},\n'
+                    f'    torch_dtype=torch.bfloat16,\n'
                     f'    attn_implementation="eager",\n'
-                    f'    load_in_8bit=True,\n'
-                    f'    device_map="auto",\n'
                     f')'
                 )
                 content = content[:start] + new_call + content[end+1:]
                 patched = True
-                logger.info(f"[Startup] infer.py: patched from_pretrained({model_arg}) → 8-bit quantization")
+                logger.info(f"[Startup] infer.py: patched from_pretrained({model_arg}) → standard bfloat16 (no quant)")
 
-            # Comment out model.to(device) — incompatible with device_map="auto"
+            # Uncomment any previously commented model.to(device) lines
             lines = content.split('\n')
             new_lines = []
             for line in lines:
-                stripped = line.lstrip()
-                if re.match(r'(model\w*\s*=\s*)?model\w*\.to\(', stripped) and '# [DocuMusic]' not in line:
-                    indent = line[:len(line) - len(stripped)]
-                    new_lines.append(f'{indent}# {stripped} # [DocuMusic] incompatible with device_map="auto"')
+                if '# [DocuMusic]' in line and '.to(' in line:
+                    # Restore the original line
+                    restored = line.split('# ', 1)[1].split(' # [DocuMusic]')[0]
+                    indent = line[:len(line) - len(line.lstrip())]
+                    new_lines.append(indent + restored)
                     patched = True
                 else:
                     new_lines.append(line)
             content = '\n'.join(new_lines)
 
-            content += "\n# load_in_8bit_v3_applied = True\n"
+            content += "\n# yue_no_quant_v1_applied = True\n"
 
         # 3. Parchar torchaudio.save para usar soundfile como fallback (torchcodec no instalado)
         if 'torchaudio_patched_v3' not in content:
@@ -199,6 +199,32 @@ _ta_orig.load = _safe_ta_load
                     logger.info(f"[Startup] infer.py: {old} → {new}")
             # Mark as patched
             content += "\n# mp3_to_wav_patched = True\n"
+
+        # 5. Safe model.cpu() — evitar crash CUDA en cleanup
+        if 'safe_cpu_patched' not in content:
+            safe_cpu_patch = """
+# === DOCUMUSIC PATCH: Safe model.cpu() — evita CUDA crash en cleanup ===
+import torch as _torch_safe
+_original_module_cpu = _torch_safe.nn.Module.cpu
+def _safe_cpu(self):
+    try:
+        return _original_module_cpu(self)
+    except Exception:
+        try:
+            import gc; gc.collect()
+            _torch_safe.cuda.empty_cache()
+        except Exception:
+            pass
+_torch_safe.nn.Module.cpu = _safe_cpu
+# safe_cpu_patched = True
+"""
+            # Insert after the first 'import torch' line
+            torch_import_idx = content.find('import torch')
+            if torch_import_idx != -1:
+                end_of_line = content.find('\n', torch_import_idx)
+                content = content[:end_of_line + 1] + safe_cpu_patch + content[end_of_line + 1:]
+                patched = True
+                logger.info("[Startup] infer.py: ✅ patched safe model.cpu()")
 
         if patched and content != original:
             with open(infer_py, 'w') as f:
@@ -348,8 +374,8 @@ VALID_SECTION_TAGS = {'verse', 'chorus', 'bridge', 'intro', 'outro'}
 # FASE 0.1: Parámetros de inferencia optimizados
 # ============================================================
 YUE_PARAMS = {
-    "max_new_tokens": 1500,       # Reducido de 4096 → 1500 para caber en 16GB VRAM (~30s audio)
-    "run_n_segments": 2,          # Reducido de 3 → 2 segmentos (menos KV cache)
+    "max_new_tokens": 3000,       # Aumentado de 1500 → 3000 para canciones más largas (~60-90s audio)
+    "run_n_segments": 2,          # 2 segmentos (balance entre duración y VRAM)
     "repetition_penalty": 1.1,    # Evitar loops
     "stage2_batch_size": 1,       # Reducido de 4 → 1 (crítico para VRAM)
     "rescale": True,              # Evitar clipping en la salida
