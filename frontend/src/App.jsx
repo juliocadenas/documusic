@@ -315,9 +315,12 @@ export default function App() {
   }, [stylePrompt]);
 
   const pollJob = (jobId) => {
+    let consecutiveErrors = 0;
+    const MAX_ERRORS = 5; // After 5 consecutive errors (~7.5s), show backend unreachable error
     const iv = setInterval(async () => {
       try {
-        const res = await axios.get(`/api/job/${jobId}`);
+        const res = await axios.get(`/api/job/${jobId}`, { timeout: 5000 });
+        consecutiveErrors = 0; // Reset on success
         if (res.data.logs && res.data.logs.length > 0) setLogs(res.data.logs);
         if (res.data.completed_variants !== undefined) setCompletedVariants(res.data.completed_variants);
         if (res.data.gpu_stats) setGpuStats(res.data.gpu_stats);
@@ -326,8 +329,8 @@ export default function App() {
         
         if (res.data.status === 'done') {
           clearInterval(iv);
-          setResult(prev => ({ 
-            ...prev, 
+          setResult(prev => ({
+            ...prev,
             audio_url: res.data.audio_url,
             variants: res.data.variants || [],
             best_variant: res.data.best_variant,
@@ -348,7 +351,23 @@ export default function App() {
           setErrorDetail(detail);
           showToast('❌ Error en YuE', 'error');
         }
-      } catch (e) { /* silencio */ }
+      } catch (e) {
+        consecutiveErrors++;
+        if (consecutiveErrors >= MAX_ERRORS) {
+          clearInterval(iv);
+          setGenStatus('idle');
+          setLoading(false);
+          const errorMsg = e.code === 'ECONNREFUSED'
+            ? 'Backend caído — el servidor se reiniciará automáticamente'
+            : e.code === 'ETIMEDOUT'
+              ? 'Backend no responde — posible crash de CUDA/GPU'
+              : `Error de conexión: ${e.message}`;
+          setLogs(prev => [...prev, `❌ ${errorMsg}`]);
+          setError(errorMsg);
+          setErrorDetail('El backend se ha desconectado. Esto suele ocurrir por un error de CUDA/GPU. El servidor debería reiniciarse automáticamente en unos minutos.');
+          showToast('❌ Backend caído — intenta de nuevo en 1-2 minutos', 'error');
+        }
+      }
     }, 1500);
   };
 
