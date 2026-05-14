@@ -308,6 +308,16 @@ def _ensure_models_available():
 # 🐕 Start GPU Watchdog on startup
 @app.on_event("startup")
 async def startup_event():
+    # Configurar GPU automáticamente: persistence mode + power limit
+    try:
+        subprocess.run(["nvidia-smi", "-pm", "1"], capture_output=True, timeout=10)
+        result = subprocess.run(["nvidia-smi", "-pl", "250"], capture_output=True, text=True, timeout=10)
+        if "was set to 250" in result.stderr or "was set to 250" in result.stdout:
+            logger.info("[Startup] ✅ GPU: persistence mode ON, power limit 250W")
+        else:
+            logger.info(f"[Startup] GPU power limit: {result.stderr.strip()}")
+    except Exception as e:
+        logger.warning(f"[Startup] No se pudo configurar GPU: {e}")
     start_watchdog()
     _ensure_models_available()
     logger.info("[Startup] 🐕 GPU Watchdog iniciado — monitoreando VRAM y temperatura")
