@@ -69,27 +69,43 @@ def _patch_infer_py():
             patched = True
             logger.info("[Startup] infer.py: flash_attention_2 → eager")
 
-        # 2. Agregar attn_implementation="eager" a from_pretrained() si no lo tiene
+        # 2. Agregar attn_implementation="eager" + load_in_8bit=True a from_pretrained()
         import re
-        matches = list(re.finditer(r'from_pretrained\(', content))
-        for m in matches:
-            start = m.start()
-            depth = 0
-            end = start
-            for i in range(start, len(content)):
-                if content[i] == '(':
-                    depth += 1
-                elif content[i] == ')':
-                    depth -= 1
-                    if depth == 0:
-                        end = i
-                        break
-            call_text = content[start:end+1]
-            if 'attn_implementation' not in call_text:
-                new_call = content[start:end] + ', attn_implementation="eager")'
-                content = content[:start] + new_call + content[end+1:]
-                patched = True
-                logger.info(f"[Startup] infer.py: agregado attn_implementation='eager' a from_pretrained en pos {start}")
+        if 'load_in_8bit_applied' not in content:
+            matches = list(re.finditer(r'from_pretrained\(', content))
+            for m in matches:
+                start = m.start()
+                depth = 0
+                end = start
+                for i in range(start, len(content)):
+                    if content[i] == '(':
+                        depth += 1
+                    elif content[i] == ')':
+                        depth -= 1
+                        if depth == 0:
+                            end = i
+                            break
+                call_text = content[start:end+1]
+                # Only patch AutoModelForCausalLM.from_pretrained (Stage1/Stage2 models)
+                # Skip codec model calls
+                if 'attn_implementation' not in call_text:
+                    new_call = content[start:end] + ', attn_implementation="eager")'
+                    content = content[:start] + new_call + content[end+1:]
+                    patched = True
+                    logger.info(f"[Startup] infer.py: agregado attn_implementation='eager'")
+                # Re-find the call since content changed
+                # Add load_in_8bit=True and device_map="auto" for quantization
+                new_start = content.find(call_text[:30])
+                if new_start != -1:
+                    new_end_match = content.find(')', new_start)
+                    if new_end_match != -1:
+                        current_call = content[new_start:new_end_match+1]
+                        if 'load_in_8bit' not in current_call and 'AutoModelForCausalLM' in content[max(0,new_start-200):new_start]:
+                            replacement = content[new_start:new_end_match] + ', load_in_8bit=True, device_map="auto")'
+                            content = content[:new_start] + replacement + content[new_end_match+1:]
+                            patched = True
+                            logger.info("[Startup] infer.py: agregado load_in_8bit=True, device_map='auto'")
+            content += "\n# load_in_8bit_applied = True\n"
 
         # 3. Parchar torchaudio.save para usar soundfile como fallback (torchcodec no instalado)
         if 'torchaudio_patched_v3' not in content:
