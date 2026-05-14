@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import './App.css';
 
-const LoadingOverlay = ({ status, logs, numVariants, completedVariants, startTime, serverAlive }) => {
+const LoadingOverlay = ({ status, logs, numVariants, completedVariants, startTime, serverAlive, gpuStats, subprocessAlive, secondsSinceActivity }) => {
   const consoleRef = React.useRef(null);
   const [elapsed, setElapsed] = React.useState(0);
 
@@ -29,6 +29,28 @@ const LoadingOverlay = ({ status, logs, numVariants, completedVariants, startTim
 
   const progress = numVariants > 0 ? Math.round((completedVariants / numVariants) * 100) : 0;
 
+  // Parse current stage from logs
+  const lastLogs = logs?.slice(-10) || [];
+  const stageInfo = (() => {
+    for (const l of [...lastLogs].reverse()) {
+      if (l.includes('Stage1 inference')) {
+        const pctMatch = l.match(/(\d+)%/);
+        return { stage: 'Stage 1 (Letra → Tokens)', pct: pctMatch ? pctMatch[1] : null };
+      }
+      if (l.includes('Stage 2 inference') || l.includes('Stage2')) {
+        const pctMatch = l.match(/(\d+)%/);
+        return { stage: 'Stage 2 (Tokens → Audio)', pct: pctMatch ? pctMatch[1] : null };
+      }
+      if (l.includes('vocoder') || l.includes('Decoded') || l.includes('Saved')) return { stage: 'Vocoder (Decodificando)', pct: null };
+      if (l.includes('Masterizando') || l.includes('mix')) return { stage: 'Masterizando audio', pct: null };
+      if (l.includes('Loading checkpoint')) return { stage: 'Cargando modelo', pct: null };
+    }
+    return null;
+  })();
+
+  // VRAM bar
+  const vramPct = gpuStats ? Math.round((gpuStats.vram_used_mb / gpuStats.vram_total_mb) * 100) : 0;
+
   return (
     <div className="loading-overlay">
       <div className="loading-content">
@@ -38,30 +60,77 @@ const LoadingOverlay = ({ status, logs, numVariants, completedVariants, startTim
         </div>
         <div className="loading-overlay-sub">
           {status === 'generating'
-            ? `${numVariants} variante(s) · ${completedVariants}/${numVariants} completada(s) · Esto suele tardar 2-5 minutos`
+            ? `${numVariants} variante(s) · ${completedVariants}/${numVariants} completada(s) · Esto suele tardar 5-10 minutos`
             : 'Preparando entorno de ejecución...'}
         </div>
         
-        {/* Timer + Server Status */}
-        <div style={{ display: 'flex', justifyContent: 'center', gap: '24px', margin: '8px 0', fontSize: '14px', color: '#a5b4fc' }}>
+        {/* Timer + Server + Process Status */}
+        <div style={{ display: 'flex', justifyContent: 'center', gap: '16px', margin: '8px 0', fontSize: '13px', color: '#a5b4fc', flexWrap: 'wrap' }}>
           {startTime && (
             <span style={{ fontFamily: 'monospace', fontSize: '18px', color: '#e0e7ff' }}>
               ⏱ {formatTime(elapsed)}
             </span>
           )}
-          <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
             <span style={{
               width: 8, height: 8, borderRadius: '50%',
               background: serverAlive ? '#4ade80' : '#f87171',
               boxShadow: serverAlive ? '0 0 6px #4ade80' : '0 0 6px #f87171',
               animation: 'pulse 2s infinite',
             }} />
-            {serverAlive ? 'Servidor conectado' : 'Servidor no responde'}
+            {serverAlive ? 'Online' : 'Offline'}
           </span>
+          {subprocessAlive !== undefined && status === 'generating' && (
+            <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+              <span style={{
+                width: 8, height: 8, borderRadius: '50%',
+                background: subprocessAlive ? '#facc15' : '#f87171',
+                boxShadow: subprocessAlive ? '0 0 6px #facc15' : '0 0 6px #f87171',
+              }} />
+              {subprocessAlive ? 'Proceso activo' : 'Proceso detenido'}
+            </span>
+          )}
+          {secondsSinceActivity !== undefined && secondsSinceActivity > 10 && status === 'generating' && (
+            <span style={{ color: secondsSinceActivity > 120 ? '#f87171' : '#fbbf24', fontSize: '12px' }}>
+              ⏳ Sin actividad {secondsSinceActivity}s
+            </span>
+          )}
         </div>
+
+        {/* Stage Info */}
+        {stageInfo && status === 'generating' && (
+          <div style={{
+            background: 'rgba(99,102,241,0.15)', borderRadius: 8, padding: '8px 16px',
+            margin: '4px auto', maxWidth: '90%', textAlign: 'center', fontSize: '13px', color: '#c7d2fe'
+          }}>
+            🔧 <strong>{stageInfo.stage}</strong>
+            {stageInfo.pct && (
+              <span style={{ marginLeft: 8, fontFamily: 'monospace', color: '#a5b4fc' }}>{stageInfo.pct}%</span>
+            )}
+          </div>
+        )}
+
+        {/* GPU Stats */}
+        {gpuStats && status === 'generating' && (
+          <div style={{
+            display: 'flex', justifyContent: 'center', gap: '20px', margin: '6px auto',
+            maxWidth: '90%', fontSize: '12px', color: '#94a3b8', fontFamily: 'monospace'
+          }}>
+            <span>🎮 VRAM: {gpuStats.vram_used_mb}/{gpuStats.vram_total_mb}MB</span>
+            <div style={{ width: 120, background: 'rgba(255,255,255,0.1)', borderRadius: 4, height: 8, alignSelf: 'center', overflow: 'hidden' }}>
+              <div style={{
+                width: `${vramPct}%`, height: '100%',
+                background: vramPct > 85 ? '#f87171' : vramPct > 60 ? '#facc15' : '#4ade80',
+                borderRadius: 4, transition: 'width 0.5s ease'
+              }} />
+            </div>
+            <span>⚡ {gpuStats.power_w?.toFixed(0)}W</span>
+            <span>📊 GPU: {gpuStats.gpu_util_pct}%</span>
+          </div>
+        )}
         
         {numVariants > 0 && (
-          <div style={{ width: '80%', margin: '12px auto', background: 'rgba(255,255,255,0.1)', borderRadius: 8, height: 6, overflow: 'hidden' }}>
+          <div style={{ width: '80%', margin: '8px auto', background: 'rgba(255,255,255,0.1)', borderRadius: 8, height: 6, overflow: 'hidden' }}>
             <div style={{ width: `${progress}%`, height: '100%', background: 'linear-gradient(90deg, #6366f1, #a855f7)', borderRadius: 8, transition: 'width 0.5s ease' }} />
           </div>
         )}
@@ -85,8 +154,8 @@ const LoadingOverlay = ({ status, logs, numVariants, completedVariants, startTim
 const Toast = ({ msg, type }) => <div className={`toast ${type}`}>{msg}</div>;
 
 const MODELS = [
-  { id: 'yue', name: 'YuE 7B', badge: 'Letra + Voz', desc: 'Voces cantadas reales desde tu letra. El modelo estrella de DocuMusic.', className: 'yue' },
-  { id: 'ace-step', name: 'ACE-Step 1.5', badge: 'Control fino', desc: 'Control avanzado sobre el audio. Ideal para ajustes de producción.', className: 'ace' },
+  { id: 'yue', name: 'YuE 7B', badge: 'Letra + Voz', desc: 'Voces cantadas desde tu letra. Modelo principal de DocuMusic. Mayor control sobre la letra.', className: 'yue' },
+  { id: 'ace-step', name: 'ACE-Step 1.5', badge: 'Nuevo', desc: 'Modelo alternativo 3.5B. Mejor calidad de audio, voces e instrumentación. Más rápido.', className: 'ace' },
 ];
 
 const VariantCard = ({ variant, isSelected, onSelect, jobPrefix }) => {
@@ -142,6 +211,9 @@ export default function App() {
   const [variants, setVariants] = useState([]);
   const [startTime, setStartTime] = useState(null);
   const [serverAlive, setServerAlive] = useState(true);
+  const [gpuStats, setGpuStats] = useState(null);
+  const [subprocessAlive, setSubprocessAlive] = useState(undefined);
+  const [secondsSinceActivity, setSecondsSinceActivity] = useState(undefined);
 
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type });
@@ -194,6 +266,9 @@ export default function App() {
         const res = await axios.get(`/api/job/${jobId}`);
         if (res.data.logs && res.data.logs.length > 0) setLogs(res.data.logs);
         if (res.data.completed_variants !== undefined) setCompletedVariants(res.data.completed_variants);
+        if (res.data.gpu_stats) setGpuStats(res.data.gpu_stats);
+        if (res.data.subprocess_alive !== undefined) setSubprocessAlive(res.data.subprocess_alive);
+        if (res.data.seconds_since_activity !== undefined) setSecondsSinceActivity(res.data.seconds_since_activity);
         
         if (res.data.status === 'done') {
           clearInterval(iv);
@@ -274,7 +349,7 @@ export default function App() {
 
   return (
     <div className="app">
-      {loading && <LoadingOverlay status={genStatus} logs={logs} numVariants={numVariants} completedVariants={completedVariants} startTime={startTime} serverAlive={serverAlive} />}
+      {loading && <LoadingOverlay status={genStatus} logs={logs} numVariants={numVariants} completedVariants={completedVariants} startTime={startTime} serverAlive={serverAlive} gpuStats={gpuStats} subprocessAlive={subprocessAlive} secondsSinceActivity={secondsSinceActivity} />}
       {toast && <Toast msg={toast.msg} type={toast.type} />}
 
       {/* ---- HEADER ---- */}

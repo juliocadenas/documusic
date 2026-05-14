@@ -18,6 +18,8 @@ services:
       - ./backend:/app
       # Modelos centralizados en el Hub
       - /home/pepe/AI_MODELS/huggingface:/app/models
+      # ACE-Step repo + checkpoints (persistente en host)
+      - /home/pepe/AI_MODELS/ace-step:/opt/ACE-Step
       # Outputs persistentes
       - ./outputs:/app/outputs
     environment:
