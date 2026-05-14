@@ -150,6 +150,19 @@ def _patch_infer_py():
             content = '\n'.join(new_lines)
             content += "\n# yue_to_device_conditional_applied = True\n"
 
+        # 2c. Wrap torch.cuda.empty_cache() in try/except — prevents CUDA crash after Stage1
+        if 'yue_safe_empty_cache_applied' not in content:
+            # Use regex to preserve indentation
+            content = re.sub(
+                r'^(\s*)torch\.cuda\.empty_cache\(\)',
+                r'\1try:\n\1    torch.cuda.empty_cache()\n\1except Exception:\n\1    pass  # [DocuMusic] safe empty_cache',
+                content,
+                flags=re.MULTILINE
+            )
+            content += "\n# yue_safe_empty_cache_applied = True\n"
+            patched = True
+            logger.info("[Startup] infer.py: wrapped torch.cuda.empty_cache() in try/except")
+
         # 3. Parchar torchaudio.save para usar soundfile como fallback (torchcodec no instalado)
         if 'torchaudio_patched_v3' not in content:
             # Remove old patches if present (v1 or v2)
