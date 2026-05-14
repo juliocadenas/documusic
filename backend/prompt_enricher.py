@@ -607,9 +607,12 @@ def enrich_style_for_yue(raw_prompt: str) -> str:
     Transform a style prompt into YuE-compatible space-separated tags.
     
     YuE expects space-separated tags from its known tag vocabulary (top_200_tags.json).
-    Example output: "country acoustic guitar pedal steel guitar fiddle male vocal warm"
+    Categories needed: genre, instrument, mood, gender, timbre (ALL are needed for vocals!)
     
-    Max length: ~80 chars (YuE filename limit for genre.txt).
+    Official example: "inspiring female uplifting pop airy vocal electronic bright vocal vocal"
+    Key insight: YuE NEEDS timbre tags + gender + "singing" + repeated "vocal" to generate vocals.
+    
+    Max length: ~120 chars (increased from 80 — vocal tags are critical).
     """
     if not raw_prompt or not raw_prompt.strip():
         raw_prompt = "pop"
@@ -646,7 +649,7 @@ def enrich_style_for_yue(raw_prompt: str) -> str:
         if inst_key in prompt_lower:
             _add_tag(YUE_INSTRUMENT_MAP[inst_key])
     
-    # 3. Detect vocal gender/timbre
+    # 3. Detect vocal gender/timbre — CRITICAL for vocal generation
     has_male = any(kw in prompt_lower for kw in ["male", "man", "baritone", "tenor", "boy"])
     has_female = any(kw in prompt_lower for kw in ["female", "woman", "soprano", "alto", "girl"])
     has_duet = any(kw in prompt_lower for kw in ["duet", "duo", "male and female", "both voices"])
@@ -654,22 +657,51 @@ def enrich_style_for_yue(raw_prompt: str) -> str:
     
     if has_instrumental:
         pass  # No vocal tags
-    elif has_duet:
-        _add_tag("duet")
-        _add_tag("male vocal")
-        _add_tag("female vocal")
-    elif has_male:
-        _add_tag("male vocal")
-    elif has_female:
-        _add_tag("female vocal")
     else:
-        # Default: add generic vocal tag
-        _add_tag("Vocal")
+        # ALWAYS add vocal-related tags — this is what makes YuE generate singing!
+        # Based on official example: "inspiring female uplifting pop airy vocal electronic bright vocal vocal"
+        
+        # 3a. Gender tag (from top_200_tags gender category)
+        if has_duet:
+            _add_tag("male")
+            _add_tag("female")
+        elif has_male:
+            _add_tag("male")
+        elif has_female:
+            _add_tag("female")
+        else:
+            # Default gender
+            _add_tag("male")
+        
+        # 3b. "singing" tag (from top_200_tags gender category — critical for vocal generation)
+        _add_tag("singing")
+        
+        # 3c. Timbre tags (from top_200_tags timbre category — CRITICAL for vocal quality)
+        # Pick appropriate timbre based on genre/mood
+        if has_male:
+            _add_tag("full vocal")      # Rich, deep male vocal
+            _add_tag("warm vocal")       # Warm tone
+        elif has_female:
+            _add_tag("bright vocal")     # Clear, bright female vocal
+            _add_tag("airy vocal")       # Airy, light tone
+        else:
+            _add_tag("bright vocal")
+            _add_tag("full vocal")
+        
+        # 3d. Add "vocal" multiple times (official example has it 3 times!)
+        _add_tag("vocal")
     
-    # 4. Detect mood → add mood tags
+    # 4. Detect mood → add mood tags (ALWAYS add at least one mood tag)
+    mood_added = False
     for mood_key, yue_tag in YUE_MOOD_MAP.items():
         if mood_key in prompt_lower:
             _add_tag(yue_tag)
+            mood_added = True
+    
+    # Default mood if none detected — YuE examples always have mood tags
+    if not mood_added and not has_instrumental:
+        _add_tag("uplifting")
+        _add_tag("emotional")
     
     # 5. Add genre-appropriate instrument defaults if no instruments specified
     has_any_instrument = any(inst in prompt_lower for inst in YUE_INSTRUMENT_MAP.keys())
@@ -715,15 +747,14 @@ def enrich_style_for_yue(raw_prompt: str) -> str:
     # Build space-separated string
     result = " ".join(tags)
     
-    # Enforce max 80 chars — smart truncation
-    if len(result) > 80:
-        # Priority: genre tags + vocal + instruments, drop mood/production first
-        # Try removing from the end
-        while len(result) > 80 and tags:
+    # Enforce max 120 chars — increased from 80 because vocal tags are critical
+    if len(result) > 120:
+        # Priority: genre + vocal + gender + timbre + singing, drop instruments/mood first
+        while len(result) > 120 and tags:
             tags.pop()
             result = " ".join(tags)
     
-    logger.info(f"[YuE Enrich] '{raw_prompt}' → '{result}' ({len(result)} chars)")
+    logger.info(f"[YuE Enrich] '{raw_prompt}' → '{result}' ({len(result)} chars, {len(tags)} tags)")
     return result
 
 
