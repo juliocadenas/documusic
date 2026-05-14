@@ -74,7 +74,7 @@ def _patch_infer_py():
 
         # 2. Parchar from_pretrained() con conditional 8-bit/16-bit quantization
         import re
-        if 'yue_cond_quant_v2_applied' not in content:
+        if 'yue_cond_quant_v2_applied' not in content and 'yue_cond_quant_v3_applied' not in content:
             # Find all AutoModelForCausalLM.from_pretrained(...) calls
             fp_pattern = re.compile(r'AutoModelForCausalLM\.from_pretrained\(')
             matches = list(fp_pattern.finditer(content))
@@ -126,6 +126,29 @@ def _patch_infer_py():
             content = '\n'.join(new_lines)
 
             content += "\n# yue_cond_quant_v2_applied = True\n"
+
+        # 2b. Fix .to(device) — un-comment old patches and wrap in conditional
+        # This is a separate step because the old v1 patch commented out .to(device)
+        # and the v2 patch above couldn't find them (they were already commented)
+        if 'yue_to_device_conditional_applied' not in content:
+            lines = content.split('\n')
+            new_lines = []
+            for line in lines:
+                stripped = line.lstrip()
+                # Match commented-out .to(device) from old v1 patch:
+                # "# model.to(device) # [DocuMusic] incompatible with device_map="auto""
+                if re.match(r'#\s*(model\w*\s*=\s*)?model\w*\.to\(', stripped) and '[DocuMusic]' in line and 'incompatible' in line:
+                    indent = line[:len(line) - len(stripped)]
+                    # Extract the original uncommented code
+                    uncommented = re.sub(r'^#\s*', '', stripped)
+                    uncommented = re.sub(r'\s*#\s*\[DocuMusic\].*$', '', uncommented)
+                    # Wrap in conditional
+                    new_lines.append(f'{indent}if os.environ.get(\'YUE_USE_8BIT\', \'1\') != \'1\': {uncommented}  # [DocuMusic] conditional .to(device)')
+                    patched = True
+                else:
+                    new_lines.append(line)
+            content = '\n'.join(new_lines)
+            content += "\n# yue_to_device_conditional_applied = True\n"
 
         # 3. Parchar torchaudio.save para usar soundfile como fallback (torchcodec no instalado)
         if 'torchaudio_patched_v3' not in content:
