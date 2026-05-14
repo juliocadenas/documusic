@@ -69,9 +69,9 @@ def _patch_infer_py():
             patched = True
             logger.info("[Startup] infer.py: flash_attention_2 → eager")
 
-        # 2. Parchar from_pretrained() con attn_implementation="eager" (SIN 8-bit para mejor calidad)
+        # 2. Parchar from_pretrained() con 8-bit quantization (PCIe estable en RTX 5080)
         import re
-        if 'yue_no_quant_v1_applied' not in content:
+        if 'yue_8bit_stable_v1_applied' not in content:
             # Find all AutoModelForCausalLM.from_pretrained(...) calls
             fp_pattern = re.compile(r'AutoModelForCausalLM\.from_pretrained\(')
             matches = list(fp_pattern.finditer(content))
@@ -95,34 +95,34 @@ def _patch_infer_py():
                 if not first_arg_match:
                     continue
                 model_arg = first_arg_match.group(1)
-                # Build clean replacement call WITHOUT 8-bit quantization
-                # Uses torch.bfloat16 for best quality on RTX 5080
+                # Build clean replacement call WITH 8-bit quantization
+                # Required for PCIe stability on RTX 5080 (reduces VRAM ~14GB → ~7GB)
                 new_call = (
                     f'AutoModelForCausalLM.from_pretrained(\n'
                     f'    {model_arg},\n'
-                    f'    torch_dtype=torch.bfloat16,\n'
                     f'    attn_implementation="eager",\n'
+                    f'    load_in_8bit=True,\n'
+                    f'    device_map="auto",\n'
                     f')'
                 )
                 content = content[:start] + new_call + content[end+1:]
                 patched = True
-                logger.info(f"[Startup] infer.py: patched from_pretrained({model_arg}) → standard bfloat16 (no quant)")
+                logger.info(f"[Startup] infer.py: patched from_pretrained({model_arg}) → 8-bit quantization (stable)")
 
-            # Uncomment any previously commented model.to(device) lines
+            # Comment out model.to(device) — incompatible with device_map="auto"
             lines = content.split('\n')
             new_lines = []
             for line in lines:
-                if '# [DocuMusic]' in line and '.to(' in line:
-                    # Restore the original line
-                    restored = line.split('# ', 1)[1].split(' # [DocuMusic]')[0]
-                    indent = line[:len(line) - len(line.lstrip())]
-                    new_lines.append(indent + restored)
+                stripped = line.lstrip()
+                if re.match(r'(model\w*\s*=\s*)?model\w*\.to\(', stripped) and '# [DocuMusic]' not in line:
+                    indent = line[:len(line) - len(stripped)]
+                    new_lines.append(f'{indent}# {stripped} # [DocuMusic] incompatible with device_map="auto"')
                     patched = True
                 else:
                     new_lines.append(line)
             content = '\n'.join(new_lines)
 
-            content += "\n# yue_no_quant_v1_applied = True\n"
+            content += "\n# yue_8bit_stable_v1_applied = True\n"
 
         # 3. Parchar torchaudio.save para usar soundfile como fallback (torchcodec no instalado)
         if 'torchaudio_patched_v3' not in content:
