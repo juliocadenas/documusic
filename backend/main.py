@@ -71,7 +71,7 @@ def _patch_infer_py():
 
         # 2. Parchar from_pretrained() para 8-bit quantization + comentar model.to(device)
         import re
-        if 'load_in_8bit_v2_applied' not in content:
+        if 'load_in_8bit_v3_applied' not in content:
             # Find all AutoModelForCausalLM.from_pretrained(...) calls
             fp_pattern = re.compile(r'AutoModelForCausalLM\.from_pretrained\(')
             matches = list(fp_pattern.finditer(content))
@@ -114,7 +114,7 @@ def _patch_infer_py():
             new_lines = []
             for line in lines:
                 stripped = line.lstrip()
-                if re.match(r'model\s*=\s*model\.to\(|model\.to\(', stripped) and '# [DocuMusic]' not in line:
+                if re.match(r'(model\w*\s*=\s*)?model\w*\.to\(', stripped) and '# [DocuMusic]' not in line:
                     indent = line[:len(line) - len(stripped)]
                     new_lines.append(f'{indent}# {stripped} # [DocuMusic] incompatible with device_map="auto"')
                     patched = True
@@ -122,7 +122,7 @@ def _patch_infer_py():
                     new_lines.append(line)
             content = '\n'.join(new_lines)
 
-            content += "\n# load_in_8bit_v2_applied = True\n"
+            content += "\n# load_in_8bit_v3_applied = True\n"
 
         # 3. Parchar torchaudio.save para usar soundfile como fallback (torchcodec no instalado)
         if 'torchaudio_patched_v3' not in content:
