@@ -482,8 +482,8 @@ VALID_SECTION_TAGS = {'verse', 'chorus', 'bridge', 'intro', 'outro'}
 # FASE 0.1: Parámetros de inferencia optimizados
 # ============================================================
 YUE_PARAMS = {
-    "max_new_tokens": 6000,       # Aumentado de 3000 → 6000 para canciones ~60-120s
-    "run_n_segments": 3,          # 3 segmentos para canción completa (verse + chorus + bridge)
+    "max_new_tokens": 4500,       # 3000→4500 (50% más). 6000 causa OOM en 8-bit RTX 5080
+    "run_n_segments": 2,          # 2 segmentos. 3 causa OOM por acumulación de KV cache
     "repetition_penalty": 1.2,    # Aumentado de 1.1 → 1.2 para más variedad
     "stage2_batch_size": 1,       # Reducido de 4 → 1 (crítico para VRAM)
     "rescale": True,              # Evitar clipping en la salida
@@ -924,6 +924,8 @@ def _get_env(yue_inference_dir: str, quantization: str = "8bit") -> dict:
     env = os.environ.copy()
     # Set YUE_USE_8BIT env var for conditional quantization in patched infer.py
     env["YUE_USE_8BIT"] = "1" if quantization == "8bit" else "0"
+    # Reducir fragmentación de VRAM — crítico para evitar OOM en secuencias largas
+    env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     logger.info(f"[Inference] Quantization: {quantization} (YUE_USE_8BIT={env['YUE_USE_8BIT']})")
     paths = [
         yue_inference_dir,
