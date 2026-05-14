@@ -33,8 +33,8 @@ OUTPUT_DIR = "/app/outputs"
 YUE_DIR = "/opt/YuE"
 MODELS_DIR = "/app/models"
 ACESTEP_DIR = "/opt/ACE-Step"
-ACESTEP_MODEL_ID = "STEPFUN-IO/ACE-Step-v1.5-3.5B"
-ACESTEP_MODEL_DIR = f"{MODELS_DIR}/ACE-Step-v1.5"
+ACESTEP_MODEL_ID = "ACE-Step/ACE-Step-v1-3.5B"
+ACESTEP_MODEL_DIR = f"{MODELS_DIR}/ACE-Step-v1-3.5B"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs("/app/tmp", exist_ok=True)
 
@@ -380,14 +380,15 @@ def _ensure_acestep_available() -> bool:
         logger.info("[Startup] ✅ ACE-Step importable")
         ace_available = True
     except ImportError:
-        logger.info("[Startup] 🔧 Instalando ACE-Step (pip install -e .)...")
+        logger.info("[Startup] 🔧 Instalando ACE-Step (pip install --no-deps -e .)...")
         try:
+            # Use --no-deps to prevent pulling nvidia-nccl-cu12 which breaks PyTorch nightly
             result = subprocess.run(
-                ["pip3", "install", "-e", ACESTEP_DIR],
-                capture_output=True, text=True, timeout=300
+                ["pip3", "install", "--no-deps", "-e", ACESTEP_DIR],
+                capture_output=True, text=True, timeout=120
             )
             if result.returncode == 0:
-                logger.info("[Startup] ✅ ACE-Step instalado correctamente")
+                logger.info("[Startup] ✅ ACE-Step instalado correctamente (--no-deps)")
                 ace_available = True
             else:
                 logger.warning(f"[Startup] ⚠️ Error instalando ACE-Step: {result.stderr[-500:]}")
@@ -396,17 +397,22 @@ def _ensure_acestep_available() -> bool:
             logger.warning(f"[Startup] ⚠️ No se pudo instalar ACE-Step: {e}")
             return False
 
-    # 3. Install additional dependencies that ACE-Step might need
+    # 3. Install additional dependencies that ACE-Step might need (with --no-deps for safety)
     try:
         subprocess.run(
-            ["pip3", "install", "diffusers", "probables", "--quiet"],
+            ["pip3", "install", "diffusers", "--no-deps", "--quiet"],
             capture_output=True, text=True, timeout=120
         )
     except Exception:
         pass  # Non-critical
 
     # 4. Download model weights from HuggingFace if not present
-    if ace_available and not os.path.exists(f"{ACESTEP_MODEL_DIR}/config.json"):
+    #    ACE-Step expects subdirs: music_dcae_f8c8, music_vocoder, ace_step_transformer, umt5-base
+    ace_model_ready = all(
+        os.path.exists(f"{ACESTEP_MODEL_DIR}/{d}")
+        for d in ["music_dcae_f8c8", "music_vocoder", "ace_step_transformer", "umt5-base"]
+    )
+    if ace_available and not ace_model_ready:
         logger.info(f"[Startup] 🔧 Descargando modelo {ACESTEP_MODEL_ID} (~7GB, primera vez)...")
         try:
             from huggingface_hub import snapshot_download
@@ -417,7 +423,7 @@ def _ensure_acestep_available() -> bool:
             logger.info("[Startup] ✅ Modelo ACE-Step descargado")
         except Exception as e:
             logger.warning(f"[Startup] ⚠️ No se pudo descargar modelo ACE-Step: {e}")
-            # Model will be downloaded on first generation instead
+            # Model will be downloaded on first generation instead (pipeline auto-downloads)
 
     return ace_available
 
@@ -1199,10 +1205,15 @@ def run_acestep_inference(job_id: str, lyrics: str, style_prompt: str, seeds: li
             safe_prompt = style_prompt.replace('\\', '\\\\').replace('"', '\\"').replace("'", "\\'").replace('\n', ' ')
             safe_lyrics = lyrics.replace('\\', '\\\\').replace('"', '\\"').replace("'", "\\'").replace('\n', '\\n')
 
-            # Build inline inference script
+            # Build inline inference script using real ACE-Step API
+            # API: ACEStepPipeline(checkpoint_dir, device_id=0, dtype="bfloat16", cpu_offload=False)
+            # Call: pipeline(prompt, lyrics, audio_duration, infer_step, guidance_scale, ..., save_path)
             infer_script = f'''
 import sys
 sys.path.insert(0, "{ACESTEP_DIR}")
+
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 import torch
 print(f"CUDA available: {{torch.cuda.is_available()}}", flush=True)
@@ -1210,50 +1221,51 @@ if torch.cuda.is_available():
     print(f"GPU: {{torch.cuda.get_device_name(0)}}", flush=True)
     print(f"VRAM: {{torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f}} GB", flush=True)
 
-# Import ACE-Step pipeline
-try:
-    from acestep.pipeline import ACEStepPipeline
-except ImportError as e:
-    print(f"Import error: {{e}}", flush=True)
-    # Try to find what's available
-    try:
-        import acestep
-        print(f"acestep dir: {{dir(acestep)}}", flush=True)
-    except:
-        pass
-    raise
+# Import ACE-Step pipeline (correct module name)
+from acestep.pipeline_ace_step import ACEStepPipeline
 
-print("Loading ACE-Step model...", flush=True)
+print("Loading ACE-Step model (first time downloads ~7GB)...", flush=True)
 pipeline = ACEStepPipeline(
-    checkpoint_dir="{ACESTEP_DIR}",
-    device="cuda" if torch.cuda.is_available() else "cpu",
-    torch_dtype=torch.float16,
+    checkpoint_dir="{ACESTEP_MODEL_DIR}",
+    device_id=0,
+    dtype="bfloat16",
+    cpu_offload=True,
 )
 
 print("Generating audio...", flush=True)
-result = pipeline(
+output_paths = pipeline(
+    audio_duration=30.0,
     prompt="{safe_prompt}",
     lyrics="{safe_lyrics}",
-    duration=30.0,
-    num_inference_steps=60,
-    guidance_scale=7.0,
-    seed={seed},
+    infer_step=60,
+    guidance_scale=15.0,
+    scheduler_type="euler",
+    cfg_type="apg",
+    omega_scale=10.0,
+    manual_seeds=[{seed}],
+    guidance_interval=0.5,
+    min_guidance_scale=3.0,
+    use_erg_tag=True,
+    use_erg_lyric=True,
+    use_erg_diffusion=True,
+    save_path="{output_wav}",
 )
 
-print("Saving audio...", flush=True)
-import soundfile as sf
-import numpy as np
+print(f"Output paths: {{output_paths}}", flush=True)
 
-audio = result["audio"]
-if hasattr(audio, 'cpu'):
-    audio = audio.cpu().numpy()
-if audio.ndim == 1:
-    audio = audio.reshape(1, -1)
-# soundfile expects (samples, channels)
-if audio.shape[0] < audio.shape[1]:
-    audio = audio.T
-sf.write("{output_wav}", audio, 44100)
-print("GENERATION_COMPLETE", flush=True)
+# The pipeline saves the wav file directly via save_path
+# output_paths is a list: [wav_path, ..., input_params_json_path]
+if output_paths and os.path.exists(output_paths[0]):
+    # Copy to expected location if different
+    import shutil
+    src = output_paths[0]
+    if src != "{output_wav}":
+        shutil.copy2(src, "{output_wav}")
+    print(f"Audio saved: {{os.path.getsize('{output_wav}')}} bytes", flush=True)
+    print("GENERATION_COMPLETE", flush=True)
+else:
+    print(f"ERROR: No output file generated. output_paths={{output_paths}}", flush=True)
+    sys.exit(1)
 '''
             script_path = f"{tmp_dir}/acestep_v{variant_idx}.py"
             with open(script_path, 'w') as f:
