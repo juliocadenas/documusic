@@ -419,3 +419,388 @@ def get_enrichment_preview(raw_prompt: str) -> dict:
         "detected_vocal": vocal,
         "enriched_length": len(enriched),
     }
+
+
+# ============================================================
+# Lyrics Enrichment — Rule-based (no LLM)
+# ============================================================
+
+# Structural tags that indicate song sections
+_SECTION_TAGS = re.compile(r'^\s*\[(Verse|Chorus|Bridge|Pre-Chorus|Outro|Intro|Hook|Refrain|Interlude|Solo)(?:\s*\d*)?\]\s*$', re.IGNORECASE)
+
+# Common Spanish/English rhyme endings for simple phonetic matching
+_RHYME_GROUPS_ES = {
+    'ado': ['ado', 'ada', 'ados', 'adas'],
+    'ido': ['ido', 'ida', 'idos', 'idas'],
+    'ción': ['ción', 'sión', 'ción'],
+    'dad': ['dad', 'dades'],
+    'mente': ['mente'],
+    'ón': ['ón', 'ones'],
+    'ar': ['ar', 'arse', 'arte'],
+    'er': ['er', 'erse', 'erte'],
+    'ir': ['ir', 'irse', 'irte'],
+    'al': ['al', 'ales'],
+    'el': ['el', 'eles'],
+    'il': ['il', 'iles'],
+    'ol': ['ol', 'oles'],
+    'ul': ['ul', 'ules'],
+    'an': ['an', 'anes'],
+    'en': ['en', 'enes'],
+    'in': ['in', 'ines'],
+    'on': ['on', 'ones'],
+    'un': ['un', 'unes'],
+    'or': ['or', 'ores'],
+    'ez': ['ez', 'eces'],
+    'uz': ['uz', 'uces'],
+    'az': ['az', 'aces'],
+    'iz': ['iz', 'ices'],
+    'ar_': ['ar', 'ár'],
+    'er_': ['er', 'ér'],
+    'ir_': ['ir', 'ír'],
+}
+
+_RHYME_GROUPS_EN = {
+    'ight': ['ight', 'ite', 'yte'],
+    'ain': ['ain', 'ane', 'eign'],
+    'ound': ['ound', 'owned'],
+    'ing': ['ing', 'in\''],
+    'tion': ['tion', 'sion'],
+    'ness': ['ness'],
+    'ful': ['ful', 'full'],
+    'ly': ['ly', 'ley', 'lee'],
+    'er': ['er', 'or', 'ur'],
+    'ed': ['ed', 'd'],
+    'es': ['es', 's'],
+    'y': ['y', 'ie', 'ey'],
+    'ow': ['ow', 'ough'],
+    'oo': ['oo', 'ew', 'ue'],
+    'ee': ['ee', 'ea', 'ie'],
+    'ay': ['ay', 'ey', 'eigh'],
+    'old': ['old', 'oled', 'ould'],
+    'ore': ['ore', 'oar', 'our'],
+}
+
+
+def _normalize_text(text: str) -> str:
+    """Remove accents and normalize for comparison."""
+    import unicodedata
+    nfkd = unicodedata.normalize('NFKD', text)
+    return ''.join(c for c in nfkd if not unicodedata.combining(c)).lower()
+
+
+def _get_rhyme_ending(word: str) -> str:
+    """Get the rhyme-ending suffix of a word (last 2-4 chars for matching)."""
+    word = word.strip().lower().rstrip('.,;:!?¡¿()"\'')
+    if not word:
+        return ''
+    # Remove common suffixes to find the rhyme part
+    if len(word) >= 4:
+        return word[-3:]  # Last 3 chars is usually the rhyme
+    elif len(word) >= 2:
+        return word[-2:]
+    return word
+
+
+def _words_rhyme(w1: str, w2: str) -> bool:
+    """Check if two words likely rhyme based on ending similarity."""
+    e1 = _get_rhyme_ending(w1)
+    e2 = _get_rhyme_ending(w2)
+    if not e1 or not e2:
+        return False
+    # Direct match on last 2-3 chars
+    if e1[-2:] == e2[-2:]:
+        return True
+    # Check known rhyme groups
+    for group in [_RHYME_GROUPS_ES, _RHYME_GROUPS_EN]:
+        for key, endings in group.items():
+            if any(e1.endswith(e) for e in endings) and any(e2.endswith(e) for e in endings):
+                return True
+    return False
+
+
+def _get_last_word(line: str) -> str:
+    """Extract the last meaningful word from a line."""
+    # Remove structural tags
+    line = _SECTION_TAGS.sub('', line).strip()
+    words = re.findall(r'[\wáéíóúüñÁÉÍÓÚÜÑ]+', line)
+    return words[-1] if words else ''
+
+
+def _split_into_sections(lyrics: str) -> list:
+    """Split lyrics into sections based on blank lines or existing tags."""
+    lines = lyrics.split('\n')
+    sections = []
+    current_section = []
+    has_any_tag = any(_SECTION_TAGS.match(l) for l in lines)
+    
+    for line in lines:
+        stripped = line.strip()
+        
+        # If line is a section tag, start new section
+        if _SECTION_TAGS.match(stripped):
+            if current_section:
+                sections.append(current_section)
+            current_section = [stripped]
+        # Blank line = section separator (only if no tags exist)
+        elif not stripped:
+            if current_section and any(l.strip() for l in current_section):
+                # Only split on blank lines if there are no tags at all
+                if not has_any_tag:
+                    sections.append(current_section)
+                    current_section = []
+                else:
+                    current_section.append(line)
+        else:
+            current_section.append(line)
+    
+    if current_section:
+        sections.append(current_section)
+    
+    return sections
+
+
+def _section_text(section: list) -> str:
+    """Get the text content of a section (excluding tags)."""
+    return ' '.join(l.strip() for l in section if l.strip() and not _SECTION_TAGS.match(l.strip()))
+
+
+def _sections_are_similar(s1_text: str, s2_text: str) -> bool:
+    """Check if two sections are similar enough to be the same (chorus detection)."""
+    # Normalize for comparison
+    t1 = _normalize_text(s1_text)
+    t2 = _normalize_text(s2_text)
+    
+    if not t1 or not t2:
+        return False
+    
+    # Exact match
+    if t1 == t2:
+        return True
+    
+    # Check if one contains the other (partial chorus)
+    if len(t1) > 20 and len(t2) > 20:
+        if t1 in t2 or t2 in t1:
+            return True
+    
+    # Word overlap ratio
+    words1 = set(t1.split())
+    words2 = set(t2.split())
+    if not words1 or not words2:
+        return False
+    overlap = len(words1 & words2) / min(len(words1), len(words2))
+    return overlap > 0.7
+
+
+def _detect_chorus_sections(sections: list) -> set:
+    """Detect which section indices are likely choruses based on repetition."""
+    chorus_indices = set()
+    section_texts = [_section_text(s) for s in sections]
+    
+    for i in range(len(sections)):
+        for j in range(i + 1, len(sections)):
+            if _sections_are_similar(section_texts[i], section_texts[j]):
+                # Both are likely chorus if they repeat
+                # The one with more text or appearing later is more likely chorus
+                chorus_indices.add(i)
+                chorus_indices.add(j)
+    
+    return chorus_indices
+
+
+def enrich_lyrics_tags_only(raw_lyrics: str) -> str:
+    """
+    Add structural tags [Verse], [Chorus], [Bridge] to lyrics without changing the text.
+    
+    Strategy:
+    - If lyrics already have tags, clean up formatting and return
+    - Split by blank lines into sections
+    - Detect choruses by repetition
+    - Label remaining sections as verses/bridge
+    """
+    if not raw_lyrics or not raw_lyrics.strip():
+        return raw_lyrics
+    
+    raw_lyrics = raw_lyrics.strip()
+    
+    # Check if lyrics already have structural tags
+    existing_tags = _SECTION_TAGS.findall(raw_lyrics)
+    if existing_tags:
+        # Already has tags - just clean up spacing
+        lines = raw_lyrics.split('\n')
+        result = []
+        for line in lines:
+            stripped = line.strip()
+            if _SECTION_TAGS.match(stripped):
+                # Ensure blank line before tag (except at start)
+                if result and result[-1].strip():
+                    result.append('')
+                result.append(stripped)
+            else:
+                result.append(line)
+        return '\n'.join(result)
+    
+    # Split into sections
+    sections = _split_into_sections(raw_lyrics)
+    
+    if len(sections) <= 1:
+        # Single block - just label as [Verse]
+        return f"[Verse]\n{raw_lyrics}"
+    
+    # Detect choruses
+    chorus_indices = _detect_chorus_sections(sections)
+    
+    # Build tagged lyrics
+    result_parts = []
+    verse_count = 0
+    chorus_count = 0
+    
+    for i, section in enumerate(sections):
+        # Filter empty lines at start/end of section
+        content_lines = []
+        for l in section:
+            if l.strip():
+                content_lines.append(l)
+        
+        if not content_lines:
+            continue
+        
+        # Determine tag
+        if i in chorus_indices:
+            if chorus_count == 0:
+                tag = "[Chorus]"
+            else:
+                tag = "[Chorus]"  # Same tag for repeated choruses
+            chorus_count += 1
+        elif i == len(sections) - 1 and verse_count >= 2 and chorus_count >= 1:
+            tag = "[Bridge]"
+        else:
+            verse_count += 1
+            tag = f"[Verse {verse_count}]"
+        
+        section_text = '\n'.join(content_lines)
+        result_parts.append(f"{tag}\n{section_text}")
+    
+    return '\n\n'.join(result_parts)
+
+
+def _find_rhyme_suggestions(lines: list) -> dict:
+    """
+    Analyze lines and suggest rhyme improvements.
+    Returns a dict mapping line_index -> suggested last word.
+    """
+    suggestions = {}
+    last_words = [_get_last_word(line) for line in lines if line.strip() and not _SECTION_TAGS.match(line.strip())]
+    content_line_indices = [i for i, line in enumerate(lines) if line.strip() and not _SECTION_TAGS.match(line.strip())]
+    
+    if len(last_words) < 2:
+        return suggestions
+    
+    # Group consecutive pairs of lines (AABB pattern detection)
+    for idx in range(0, len(content_line_indices) - 1, 2):
+        i1 = content_line_indices[idx]
+        i2 = content_line_indices[idx + 1] if idx + 1 < len(content_line_indices) else None
+        if i2 is None:
+            continue
+        
+        w1 = last_words[idx]
+        w2 = last_words[idx + 1]
+        
+        if not _words_rhyme(w1, w2):
+            # Try to find a rhyme for w1 that could replace w2
+            # Simple approach: suggest swapping or noting non-rhyme
+            # We don't change words automatically - just note the pattern
+            pass
+    
+    return suggestions
+
+
+def _improve_section(section_lines: list) -> list:
+    """
+    Improve a single section: better line breaks, consistent formatting,
+    and basic flow improvements.
+    """
+    improved = []
+    for line in section_lines:
+        stripped = line.strip()
+        
+        # Keep tags as-is
+        if _SECTION_TAGS.match(stripped):
+            improved.append(stripped)
+            continue
+        
+        # Clean up whitespace
+        if not stripped:
+            continue
+        
+        # Capitalize first letter of each line
+        if stripped and stripped[0].islower():
+            stripped = stripped[0].upper() + stripped[1:]
+        
+        # Remove trailing punctuation inconsistencies
+        stripped = stripped.rstrip('.,;: ')
+        # Add period or comma only if the line feels incomplete
+        # (Don't force punctuation - let the user's style prevail)
+        
+        improved.append(stripped)
+    
+    return improved
+
+
+def enrich_lyrics_improve(raw_lyrics: str) -> str:
+    """
+    Improve lyrics with better structure, tags, and basic flow improvements.
+    Also adds structural tags like tags_only mode.
+    
+    Improvements:
+    - Add [Verse]/[Chorus]/[Bridge] tags
+    - Consistent capitalization
+    - Clean up whitespace and formatting
+    - Basic line grouping for better flow
+    """
+    if not raw_lyrics or not raw_lyrics.strip():
+        return raw_lyrics
+    
+    raw_lyrics = raw_lyrics.strip()
+    
+    # First apply tags_only to get structure
+    tagged = enrich_lyrics_tags_only(raw_lyrics)
+    
+    # Now improve each section
+    sections = tagged.split('\n\n')
+    improved_sections = []
+    
+    for section in sections:
+        lines = section.split('\n')
+        improved_lines = _improve_section(lines)
+        
+        if improved_lines:
+            improved_sections.append('\n'.join(improved_lines))
+    
+    result = '\n\n'.join(improved_sections)
+    
+    # Add a subtle improvement note if we changed something
+    # (The frontend can show this as a diff)
+    return result
+
+
+def get_lyrics_enrichment(raw_lyrics: str, mode: str) -> dict:
+    """
+    Enrich lyrics based on mode. Returns a dict with original and enriched text.
+    
+    Modes:
+        'tags_only': Add [Verse]/[Chorus]/[Bridge] tags, keep text exact
+        'improve': Add tags + improve formatting, capitalization, flow
+    """
+    if mode == 'tags_only':
+        enriched = enrich_lyrics_tags_only(raw_lyrics)
+    elif mode == 'improve':
+        enriched = enrich_lyrics_improve(raw_lyrics)
+    else:
+        return {"error": f"Unknown mode: {mode}"}
+    
+    return {
+        "original": raw_lyrics,
+        "enriched": enriched,
+        "mode": mode,
+        "changed": enriched != raw_lyrics,
+    }

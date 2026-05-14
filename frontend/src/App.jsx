@@ -207,6 +207,9 @@ export default function App() {
   const [completedVariants, setCompletedVariants] = useState(0);
   const [gpuAlert, setGpuAlert] = useState(null);       // 🐕 Watchdog alert
   const [enrichedPreview, setEnrichedPreview] = useState(null); // 🎨 Enriched prompt preview
+  const [lyricsDropdownOpen, setLyricsDropdownOpen] = useState(false); // ✨ Lyrics dropdown
+  const [enrichingStyle, setEnrichingStyle] = useState(false); // ✨ Style loading
+  const [enrichingLyrics, setEnrichingLyrics] = useState(false); // ✨ Lyrics loading
   const [selectedVariant, setSelectedVariant] = useState(0);
   const [variants, setVariants] = useState([]);
   const [startTime, setStartTime] = useState(null);
@@ -219,6 +222,56 @@ export default function App() {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 4000);
   };
+
+  // ✨ Magic Wand: Enrich style prompt
+  const handleEnrichStyle = async () => {
+    if (!stylePrompt.trim() || enrichingStyle) return;
+    setEnrichingStyle(true);
+    try {
+      const res = await axios.post('/api/enrich-preview', { style_prompt: stylePrompt, mode: 'style' });
+      if (res.data.enriched && res.data.enriched !== stylePrompt) {
+        setStylePrompt(res.data.enriched);
+        setEnrichedPreview(res.data);
+        showToast('✨ Estilo enriquecido', 'success');
+      } else {
+        showToast('El estilo ya está optimizado', 'info');
+      }
+    } catch (e) {
+      showToast('Error al enriquecer estilo', 'error');
+    } finally {
+      setEnrichingStyle(false);
+    }
+  };
+
+  // ✨ Magic Wand: Enrich lyrics
+  const handleEnrichLyrics = async (mode) => {
+    if (!lyrics.trim() || enrichingLyrics) return;
+    setLyricsDropdownOpen(false);
+    setEnrichingLyrics(true);
+    try {
+      const res = await axios.post('/api/enrich-preview', { lyrics, mode });
+      if (res.data.enriched && res.data.changed) {
+        setLyrics(res.data.enriched);
+        showToast(mode === 'tags_only' ? '✨ Etiquetas agregadas' : '✨ Letra mejorada', 'success');
+      } else {
+        showToast('La letra ya está estructurada', 'info');
+      }
+    } catch (e) {
+      showToast('Error al enriquecer letra', 'error');
+    } finally {
+      setEnrichingLyrics(false);
+    }
+  };
+
+  // Close lyrics dropdown on outside click
+  useEffect(() => {
+    if (!lyricsDropdownOpen) return;
+    const handler = (e) => {
+      if (!e.target.closest('.magic-wand-wrapper')) setLyricsDropdownOpen(false);
+    };
+    document.addEventListener('click', handler);
+    return () => document.removeEventListener('click', handler);
+  }, [lyricsDropdownOpen]);
 
   useEffect(() => {
     const check = () => axios.get('/api/').then(r => { setServerStatus(r.data); setServerAlive(true); }).catch(() => { setServerStatus({ gpu: 'Offline', status: 'Disconnected' }); setServerAlive(false); });
@@ -382,6 +435,34 @@ export default function App() {
             <span className="suno-block-icon">🎵</span>
             <span className="suno-block-title">Lyrics</span>
             <span className="suno-block-hint">Usa [Verse] y [Chorus] para estructurar</span>
+            <div className="magic-wand-wrapper">
+              <button
+                className={`magic-wand-btn ${enrichingLyrics ? 'loading' : ''}`}
+                onClick={(e) => { e.stopPropagation(); setLyricsDropdownOpen(v => !v); }}
+                disabled={enrichingLyrics || !lyrics.trim()}
+                title="Mejorar letra"
+              >
+                {enrichingLyrics ? '⏳' : '✨'}
+              </button>
+              {lyricsDropdownOpen && (
+                <div className="magic-wand-dropdown">
+                  <button className="magic-wand-option" onClick={() => handleEnrichLyrics('tags_only')}>
+                    <span className="magic-wand-option-icon">🏷️</span>
+                    <div className="magic-wand-option-text">
+                      <strong>Solo etiquetas</strong>
+                      <small>Agregar [Verse], [Chorus], [Bridge] sin cambiar la letra</small>
+                    </div>
+                  </button>
+                  <button className="magic-wand-option" onClick={() => handleEnrichLyrics('improve')}>
+                    <span className="magic-wand-option-icon">🎶</span>
+                    <div className="magic-wand-option-text">
+                      <strong>Mejorar letra</strong>
+                      <small>Mejorar formato, capitalización y fluidez + etiquetas</small>
+                    </div>
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
           <textarea
             className="suno-textarea"
@@ -398,6 +479,14 @@ export default function App() {
             <span className="suno-block-icon">🎸</span>
             <span className="suno-block-title">Style of Music</span>
             <span className="suno-block-hint">Describe género, voz, instrumentos y más</span>
+            <button
+              className={`magic-wand-btn ${enrichingStyle ? 'loading' : ''}`}
+              onClick={handleEnrichStyle}
+              disabled={enrichingStyle || !stylePrompt.trim()}
+              title="Enriquecer estilo"
+            >
+              {enrichingStyle ? '⏳' : '✨'}
+            </button>
           </div>
           <textarea
             className="suno-textarea style-textarea"

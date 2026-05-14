@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 import httpx
 
 # DocuMusic modules
-from prompt_enricher import enrich_style_prompt, get_enrichment_preview
+from prompt_enricher import enrich_style_prompt, get_enrichment_preview, get_lyrics_enrichment
 from gpu_watchdog import start_watchdog, get_watchdog_status, can_generate
 
 logging.basicConfig(level=logging.INFO)
@@ -1429,9 +1429,19 @@ def gpu_status():
 
 @app.post("/api/enrich-preview")
 def enrich_preview(req: dict):
-    """Preview what the prompt enricher would produce for a given style."""
-    style = req.get("style_prompt", "")
-    return get_enrichment_preview(style)
+    """Preview what the prompt enricher would produce for a given style or lyrics."""
+    mode = req.get("mode", "style")
+    
+    if mode in ("tags_only", "improve"):
+        # Lyrics enrichment modes
+        lyrics = req.get("lyrics", "")
+        if not lyrics.strip():
+            return {"error": "No lyrics provided", "original": "", "enriched": "", "mode": mode, "changed": False}
+        return get_lyrics_enrichment(lyrics, mode)
+    else:
+        # Style enrichment (default)
+        style = req.get("style_prompt", "")
+        return get_enrichment_preview(style)
 
 
 @app.get("/api/diagnostics")

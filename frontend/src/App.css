@@ -1003,3 +1003,125 @@ select option { background: var(--surface2); }
   0%, 100% { opacity: 1; }
   50% { opacity: 0.75; }
 }
+
+/* ============================================================
+   ✨ Magic Wand Button & Dropdown
+   ============================================================ */
+
+.magic-wand-wrapper {
+  position: relative;
+  margin-left: auto;
+}
+
+.magic-wand-btn {
+  background: linear-gradient(135deg, rgba(124, 58, 237, 0.15), rgba(6, 182, 212, 0.15));
+  border: 1px solid rgba(124, 58, 237, 0.3);
+  color: #e2e8f0;
+  font-size: 1.1rem;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+  padding: 0;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.magic-wand-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, rgba(124, 58, 237, 0.3), rgba(6, 182, 212, 0.3));
+  border-color: rgba(124, 58, 237, 0.6);
+  transform: scale(1.08);
+  box-shadow: 0 0 16px rgba(124, 58, 237, 0.25);
+}
+
+.magic-wand-btn:active:not(:disabled) {
+  transform: scale(0.95);
+}
+
+.magic-wand-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.magic-wand-btn.loading {
+  animation: magic-spin 1s linear infinite;
+}
+
+@keyframes magic-spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/* Dropdown */
+.magic-wand-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 280px;
+  background: var(--surface2, #161620);
+  border: 1px solid var(--border, #1e1e2e);
+  border-radius: 12px;
+  padding: 6px;
+  z-index: 200;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  animation: dropdown-fade-in 0.15s ease;
+}
+
+@keyframes dropdown-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.magic-wand-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--text, #e2e8f0);
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.15s ease;
+}
+
+.magic-wand-option:hover {
+  background: rgba(124, 58, 237, 0.1);
+  border-color: rgba(124, 58, 237, 0.25);
+}
+
+.magic-wand-option-icon {
+  font-size: 1.2rem;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.magic-wand-option-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.magic-wand-option-text strong {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text, #e2e8f0);
+}
+
+.magic-wand-option-text small {
+  font-size: 0.75rem;
+  color: var(--text-dim, #64748b);
+  line-height: 1.3;
+}
