@@ -896,12 +896,17 @@ def run_yue_inference_multi(job_id: str, lyrics: str, style_prompt: str, yue_scr
                     universal_newlines=True
                 )
 
+                # Store PID for subprocess monitoring
+                import time as _time
+                jobs[job_id]["subprocess_pid"] = process.pid
+
                 for line in process.stdout:
                     clean_line = line.strip()
                     if clean_line:
                         prefix = f"[{variant_label}]"
                         print(f"[{job_id}] {prefix} {clean_line}")
                         jobs[job_id]["logs"].append(f"{prefix} {clean_line}")
+                        jobs[job_id]["last_log_time"] = _time.time()
                         if any(kw in clean_line.lower() for kw in ['error', 'traceback', 'exception', 'failed']):
                             error_lines.append(clean_line)
 
@@ -1037,7 +1042,42 @@ def run_yue_inference(job_id: str, lyrics: str, style_prompt: str, yue_script: s
 
 @app.get("/api/job/{job_id}")
 def get_job(job_id: str):
-    return jobs.get(job_id, {"status": "not_found"})
+    job = jobs.get(job_id, {"status": "not_found"})
+    if job_id in jobs and jobs[job_id].get("status") == "generating":
+        # Add real-time GPU stats
+        try:
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=memory.used,memory.total,utilization.gpu,power.draw", "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0:
+                parts = result.stdout.strip().split(", ")
+                job["gpu_stats"] = {
+                    "vram_used_mb": int(parts[0].strip()),
+                    "vram_total_mb": int(parts[1].strip()),
+                    "gpu_util_pct": int(parts[2].strip()),
+                    "power_w": float(parts[3].strip()),
+                }
+        except Exception:
+            pass
+
+        # Check if subprocess is still running
+        pid = jobs[job_id].get("subprocess_pid")
+        if pid:
+            try:
+                os.kill(pid, 0)  # Check if process exists
+                job["subprocess_alive"] = True
+            except (ProcessLookupError, PermissionError):
+                job["subprocess_alive"] = False
+        else:
+            job["subprocess_alive"] = False
+
+        # Time since last log activity
+        last_ts = jobs[job_id].get("last_log_time")
+        if last_ts:
+            import time as _time
+            job["seconds_since_activity"] = int(_time.time() - last_ts)
+    return job
 
 
 @app.get("/api/gpu")
