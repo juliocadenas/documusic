@@ -157,6 +157,78 @@ main { flex: 1; padding: 40px; max-width: 1200px; margin: 0 auto; width: 100%; }
 .model-name { font-size: 1.1rem; font-weight: 700; margin-bottom: 6px; }
 .model-desc { font-size: 0.8rem; color: var(--text-dim); line-height: 1.5; }
 
+/* ---- QUANTIZATION TOGGLE ---- */
+.quantization-section {
+  margin-bottom: 24px;
+}
+
+.quantization-toggle {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 20px;
+}
+
+.quantization-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  white-space: nowrap;
+}
+
+.quantization-switch {
+  display: flex;
+  gap: 4px;
+  background: var(--surface2);
+  border-radius: 8px;
+  padding: 3px;
+}
+
+.quantization-btn {
+  padding: 6px 16px;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 0.82rem;
+  font-weight: 600;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-family: 'Inter', sans-serif;
+}
+
+.quantization-btn:hover {
+  color: var(--text);
+}
+
+.quantization-btn.active {
+  background: var(--accent);
+  color: white;
+  box-shadow: 0 2px 8px rgba(124, 58, 237, 0.3);
+}
+
+.quantization-info {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.quantization-warning {
+  margin-top: 8px;
+  padding: 8px 14px;
+  background: rgba(251, 191, 36, 0.1);
+  border: 1px solid rgba(251, 191, 36, 0.25);
+  border-radius: 8px;
+  font-size: 0.78rem;
+  color: #fbbf24;
+  font-weight: 500;
+}
+
 /* ---- MODE TABS ---- */
 .mode-tabs {
   display: flex;

@@ -193,6 +193,7 @@ const VariantCard = ({ variant, isSelected, onSelect, jobPrefix }) => {
 
 export default function App() {
   const [model, setModel] = useState('yue');
+  const [quantization, setQuantization] = useState('8bit');
   const [serverStatus, setServerStatus] = useState(null);
   const [lyrics, setLyrics] = useState('');
   const [stylePrompt, setStylePrompt] = useState('');
@@ -363,11 +364,12 @@ export default function App() {
     setGenStatus('processing');
     showToast('⚡ Enviando a Madrid...');
     try {
-      const res = await axios.post('/api/generate', { 
-        lyrics, 
-        style_prompt: stylePrompt, 
+      const res = await axios.post('/api/generate', {
+        lyrics,
+        style_prompt: stylePrompt,
         model,
         num_variants: numVariants,
+        quantization,
       });
       setResult(res.data);
       if (res.data.model_status === 'generating') {
@@ -417,17 +419,48 @@ export default function App() {
       </header>
 
       <main>
-        {/* ---- SELECTOR DE MODELO ---- */}
-        <p className="section-title">Motor de Generación</p>
-        <div className="model-selector">
-          {MODELS.map(m => (
-            <div key={m.id} className={`model-card ${m.className} ${model === m.id ? 'selected' : ''}`} onClick={() => setModel(m.id)}>
-              <span className={`model-badge ${m.className}`}>{m.badge}</span>
-              <div className="model-name">{m.name}</div>
-              <div className="model-desc">{m.desc}</div>
+      {/* ---- SELECTOR DE MODELO ---- */}
+      <p className="section-title">Motor de Generación</p>
+      <div className="model-selector">
+        {MODELS.map(m => (
+          <div key={m.id} className={`model-card ${m.className} ${model === m.id ? 'selected' : ''}`} onClick={() => setModel(m.id)}>
+            <span className={`model-badge ${m.className}`}>{m.badge}</span>
+            <div className="model-name">{m.name}</div>
+            <div className="model-desc">{m.desc}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* ---- QUANTIZATION TOGGLE ---- */}
+      {model === 'yue' && (
+        <div className="quantization-section">
+          <div className="quantization-toggle">
+            <span className="quantization-label">Cuantización</span>
+            <div className="quantization-switch">
+              <button
+                className={`quantization-btn ${quantization === '8bit' ? 'active' : ''}`}
+                onClick={() => setQuantization('8bit')}
+              >
+                8-bit
+              </button>
+              <button
+                className={`quantization-btn ${quantization === '16bit' ? 'active' : ''}`}
+                onClick={() => setQuantization('16bit')}
+              >
+                16-bit
+              </button>
             </div>
-          ))}
+            <span className="quantization-info">
+              {quantization === '8bit' ? '✅ ~7GB VRAM (recomendado)' : '⚠️ ~14GB VRAM (puede crash)'}
+            </span>
+          </div>
+          {quantization === '16bit' && (
+            <div className="quantization-warning">
+              ⚠️ 16-bit usa más VRAM, puede causar crash en GPU
+            </div>
+          )}
         </div>
+      )}
 
         {/* ---- LYRICS (estilo Suno) ---- */}
         <div className="suno-block">

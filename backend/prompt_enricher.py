@@ -406,6 +406,327 @@ def enrich_style_prompt(raw_prompt: str) -> str:
     return enriched
 
 
+# ============================================================
+# YuE-specific tag enrichment — space-separated tags from known vocabulary
+# ============================================================
+
+# YuE known tags from top_200_tags.json — only these are valid for YuE genre.txt
+YUE_KNOWN_TAGS = {
+    # Genres (case-sensitive as in top_200_tags.json)
+    "genres": {
+        "country", "Country", "Bluegrass", "Americana", "country rock",
+        "Crossover Country", "Rockabilly", "Folk", "folk", "Blues", "blues",
+        "Rock", "rock", "Pop", "pop", "Jazz", "jazz", "R&B", "rnb",
+        "Electronic", "electronic", "Hip Hop", "hip hop", "Rap", "rap",
+        "Latin", "latin", "Reggae", "reggae", "Classical", "classical",
+        "Metal", "metal", "Punk", "punk", "Soul", "soul", "Funk", "funk",
+        "Gospel", "gospel", "Indie", "indie", "Alternative", "alternative",
+        "Dance", "dance", "Disco", "disco", "Techno", "techno",
+        "House", "house", "Ambient", "ambient", "Lo-Fi", "lo-fi",
+        "Singer-Songwriter", "Singer-songwriter",
+        "Cinematic", "cinematic", "Soundtrack", "soundtrack",
+        "World Music", "world music", "Afrobeat", "afrobeat",
+        "Bossa Nova", "bossa nova", "Salsa", "salsa",
+        "Reggaeton", "reggaeton", "Bachata", "bachata",
+        "Cumbia", "cumbia", "Samba", "samba",
+    },
+    # Instruments
+    "instruments": {
+        "guitar", "acoustic guitar", "electric guitar", "bass", "bass guitar",
+        "drums", "piano", "keyboards", "synthesizer", "synth", "organ",
+        "fiddle", "violin", "cello", "strings", "brass", "trumpet",
+        "saxophone", "sax", "trombone", "flute", "clarinet",
+        "banjo", "mandolin", "dobro", "pedal steel guitar", "steel guitar",
+        "lap steel guitar", "harmonica", "accordion", "concertina",
+        "ukulele", "uke", "harp", "xylophone", "vibraphone", "marimba",
+        "congas", "bongos", "timbales", "percussion", "drum machine",
+        "808", "808s", "turntable", "sampler",
+    },
+    # Vocal / voice tags
+    "vocals": {
+        "Vocal", "vocal", "Voice", "voice", "singing", "male vocal",
+        "female vocal", "male voice", "female voice", "male", "female",
+        "duet", "choir", "harmony", "harmonies", "a cappella",
+        "falsetto", "whisper", "spoken word", "rap", "flow",
+    },
+    # Mood / descriptor tags
+    "moods": {
+        "inspiring", "uplifting", "airy", "bright", "warm", "dark",
+        "melancholic", "melancholy", "happy", "sad", "energetic", "calm",
+        "chill", "relaxed", "intense", "epic", "dreamy", "ethereal",
+        "groovy", "funky", "smooth", "raw", "gritty", "soft", "gentle",
+        "powerful", "emotional", "nostalgic", "romantic", "passionate",
+        "aggressive", "haunting", "mysterious", "triumphant", "hopeful",
+        "bittersweet", "atmospheric", "cinematic", "upbeat", "mellow",
+    },
+    # Production / quality tags
+    "production": {
+        "acoustic", "electric", "electronic", "analog", "digital",
+        "live", "studio", "lo-fi", "hi-fi", "distorted", "clean",
+        "reverb", "delay", "echo", "chorus", "compressed",
+        "stripped-down", "minimal", "layered", "full band",
+        "Nashville", "Motown", "classic", "modern", "vintage",
+    },
+}
+
+# Mapping from user input keywords → YuE known tags
+YUE_GENRE_MAP = {
+    "country": ["country", "Country"],
+    "americana": ["Americana"],
+    "bluegrass": ["Bluegrass"],
+    "nashville": ["country", "Nashville"],
+    "western": ["country", "Country"],
+    "honky": ["country", "Country"],
+    "rock": ["Rock", "rock"],
+    "rock and roll": ["Rock", "rock"],
+    "alternative": ["Alternative"],
+    "indie rock": ["Indie", "rock"],
+    "punk": ["Punk", "punk"],
+    "metal": ["Metal", "metal"],
+    "grunge": ["Rock", "rock"],
+    "hard rock": ["Rock", "rock"],
+    "classic rock": ["Rock", "classic"],
+    "pop": ["Pop", "pop"],
+    "pop rock": ["Pop", "pop", "Rock"],
+    "synth pop": ["Pop", "pop", "synth"],
+    "indie pop": ["Pop", "pop", "Indie"],
+    "k-pop": ["Pop", "pop"],
+    "jazz": ["Jazz", "jazz"],
+    "swing": ["Jazz", "jazz"],
+    "bebop": ["Jazz", "jazz"],
+    "bossa nova": ["Bossa Nova", "bossa nova", "Jazz"],
+    "blues": ["Blues", "blues"],
+    "rnb": ["R&B", "rnb", "soul"],
+    "r&b": ["R&B", "rnb", "soul"],
+    "soul": ["Soul", "soul"],
+    "funk": ["Funk", "funk"],
+    "electronic": ["Electronic", "electronic"],
+    "edm": ["Electronic", "dance"],
+    "techno": ["Techno", "techno"],
+    "house": ["House", "house"],
+    "trance": ["Electronic", "electronic"],
+    "ambient": ["Ambient", "ambient"],
+    "dubstep": ["Electronic", "electronic"],
+    "synthwave": ["Electronic", "synth"],
+    "hip hop": ["Hip Hop", "hip hop"],
+    "hip-hop": ["Hip Hop", "hip hop"],
+    "rap": ["Rap", "rap"],
+    "trap": ["Hip Hop", "hip hop", "rap"],
+    "latin": ["Latin", "latin"],
+    "salsa": ["Salsa", "salsa", "Latin"],
+    "bachata": ["Bachata", "bachata", "Latin"],
+    "reggaeton": ["Reggaeton", "reggaeton", "Latin"],
+    "cumbia": ["Cumbia", "cumbia", "Latin"],
+    "samba": ["Samba", "samba", "Latin"],
+    "folk": ["Folk", "folk", "acoustic"],
+    "acoustic": ["Folk", "folk", "acoustic"],
+    "singer-songwriter": ["Singer-Songwriter", "acoustic"],
+    "cinematic": ["Cinematic", "cinematic"],
+    "soundtrack": ["Soundtrack", "cinematic"],
+    "orchestral": ["Classical", "classical", "cinematic"],
+    "classical": ["Classical", "classical"],
+    "reggae": ["Reggae", "reggae"],
+    "gospel": ["Gospel", "gospel", "choir"],
+    "disco": ["Disco", "disco", "dance"],
+    "dance": ["Dance", "dance"],
+    "lo-fi": ["Lo-Fi", "lo-fi"],
+    "lofi": ["Lo-Fi", "lo-fi"],
+    "world": ["World Music", "world music"],
+    "afrobeat": ["Afrobeat", "afrobeat"],
+}
+
+# Instrument keyword → YuE known instrument tag
+YUE_INSTRUMENT_MAP = {
+    "guitar": "guitar",
+    "acoustic guitar": "acoustic guitar",
+    "electric guitar": "electric guitar",
+    "steel guitar": "steel guitar",
+    "pedal steel": "pedal steel guitar",
+    "pedal steel guitar": "pedal steel guitar",
+    "dobro": "dobro",
+    "slide guitar": "steel guitar",
+    "lap steel": "lap steel guitar",
+    "banjo": "banjo",
+    "mandolin": "mandolin",
+    "fiddle": "fiddle",
+    "violin": "violin",
+    "cello": "cello",
+    "strings": "strings",
+    "piano": "piano",
+    "keyboards": "keyboards",
+    "synth": "synth",
+    "synthesizer": "synthesizer",
+    "organ": "organ",
+    "bass": "bass",
+    "bass guitar": "bass guitar",
+    "drums": "drums",
+    "drum": "drums",
+    "harmonica": "harmonica",
+    "accordion": "accordion",
+    "trumpet": "trumpet",
+    "saxophone": "saxophone",
+    "sax": "sax",
+    "trombone": "trombone",
+    "flute": "flute",
+    "harp": "harp",
+    "ukulele": "ukulele",
+    "percussion": "percussion",
+    "congas": "congas",
+    "bongos": "bongos",
+    "brass": "brass",
+    "808": "808",
+    "drum machine": "drum machine",
+}
+
+# Mood keyword → YuE known mood tag
+YUE_MOOD_MAP = {
+    "inspiring": "inspiring", "inspirational": "inspiring",
+    "uplifting": "uplifting", "upbeat": "upbeat",
+    "airy": "airy", "bright": "bright",
+    "warm": "warm", "dark": "dark",
+    "melancholic": "melancholic", "melancholy": "melancholic", "sad": "sad",
+    "happy": "happy", "energetic": "energetic",
+    "calm": "calm", "chill": "chill", "relaxed": "relaxed",
+    "intense": "intense", "epic": "epic",
+    "dreamy": "dreamy", "ethereal": "ethereal",
+    "groovy": "groovy", "funky": "funky",
+    "smooth": "smooth", "raw": "raw", "gritty": "gritty",
+    "soft": "soft", "gentle": "gentle",
+    "powerful": "powerful", "emotional": "emotional",
+    "nostalgic": "nostalgic", "romantic": "romantic",
+    "passionate": "passionate", "aggressive": "aggressive",
+    "haunting": "haunting", "mysterious": "mysterious",
+    "triumphant": "triumphant", "hopeful": "hopeful",
+    "bittersweet": "bittersweet", "atmospheric": "atmospheric",
+    "mellow": "mellow",
+}
+
+
+def enrich_style_for_yue(raw_prompt: str) -> str:
+    """
+    Transform a style prompt into YuE-compatible space-separated tags.
+    
+    YuE expects space-separated tags from its known tag vocabulary (top_200_tags.json).
+    Example output: "country acoustic guitar pedal steel guitar fiddle male vocal warm"
+    
+    Max length: ~80 chars (YuE filename limit for genre.txt).
+    """
+    if not raw_prompt or not raw_prompt.strip():
+        raw_prompt = "pop"
+    
+    raw_prompt = raw_prompt.strip()
+    prompt_lower = raw_prompt.lower()
+    
+    tags = []  # Ordered list of tags to include
+    seen = set()  # Track lowercase versions to avoid duplicates
+    
+    def _add_tag(tag: str):
+        """Add a tag if not already present."""
+        if tag.lower() not in seen:
+            seen.add(tag.lower())
+            tags.append(tag)
+    
+    # 1. Detect genre → add YuE genre tags
+    for genre_key, yue_tags in YUE_GENRE_MAP.items():
+        if genre_key in prompt_lower:
+            for t in yue_tags:
+                _add_tag(t)
+    
+    # Default genre if none detected
+    if not any(g in prompt_lower for g in ["country", "rock", "pop", "jazz", "blues", "folk",
+                                             "electronic", "hip", "rap", "latin", "rnb", "r&b",
+                                             "soul", "funk", "metal", "punk", "classical", "cinematic",
+                                             "reggae", "disco", "dance", "ambient", "techno", "house"]):
+        _add_tag("pop")
+    
+    # 2. Detect instruments → add YuE instrument tags
+    # Sort instrument keys by length (longest first) to match "pedal steel guitar" before "guitar"
+    sorted_instruments = sorted(YUE_INSTRUMENT_MAP.keys(), key=len, reverse=True)
+    for inst_key in sorted_instruments:
+        if inst_key in prompt_lower:
+            _add_tag(YUE_INSTRUMENT_MAP[inst_key])
+    
+    # 3. Detect vocal gender/timbre
+    has_male = any(kw in prompt_lower for kw in ["male", "man", "baritone", "tenor", "boy"])
+    has_female = any(kw in prompt_lower for kw in ["female", "woman", "soprano", "alto", "girl"])
+    has_duet = any(kw in prompt_lower for kw in ["duet", "duo", "male and female", "both voices"])
+    has_instrumental = any(kw in prompt_lower for kw in ["instrumental", "no vocal", "no vocals", "no voice"])
+    
+    if has_instrumental:
+        pass  # No vocal tags
+    elif has_duet:
+        _add_tag("duet")
+        _add_tag("male vocal")
+        _add_tag("female vocal")
+    elif has_male:
+        _add_tag("male vocal")
+    elif has_female:
+        _add_tag("female vocal")
+    else:
+        # Default: add generic vocal tag
+        _add_tag("Vocal")
+    
+    # 4. Detect mood → add mood tags
+    for mood_key, yue_tag in YUE_MOOD_MAP.items():
+        if mood_key in prompt_lower:
+            _add_tag(yue_tag)
+    
+    # 5. Add genre-appropriate instrument defaults if no instruments specified
+    has_any_instrument = any(inst in prompt_lower for inst in YUE_INSTRUMENT_MAP.keys())
+    if not has_any_instrument:
+        # Add default instruments based on detected genre
+        genre_defaults = {
+            "country": ["acoustic guitar", "fiddle"],
+            "rock": ["electric guitar", "drums"],
+            "pop": ["synth", "drums"],
+            "jazz": ["piano", "saxophone"],
+            "blues": ["guitar", "harmonica"],
+            "folk": ["acoustic guitar"],
+            "electronic": ["synth", "bass"],
+            "hip": ["bass", "drums"],
+            "rap": ["bass", "drums"],
+            "latin": ["guitar", "percussion"],
+            "rnb": ["bass", "keyboards"],
+            "r&b": ["bass", "keyboards"],
+            "soul": ["bass", "organ"],
+            "funk": ["bass", "drums"],
+            "metal": ["electric guitar", "drums"],
+            "punk": ["electric guitar", "drums"],
+            "cinematic": ["strings", "piano"],
+            "classical": ["piano", "strings"],
+        }
+        for genre_key, defaults in genre_defaults.items():
+            if genre_key in prompt_lower:
+                for inst in defaults:
+                    _add_tag(inst)
+                break
+        else:
+            # Generic defaults
+            _add_tag("guitar")
+    
+    # 6. Add a production/quality tag if space allows
+    if "acoustic" in prompt_lower:
+        _add_tag("acoustic")
+    if "live" in prompt_lower:
+        _add_tag("live")
+    if "lo-fi" in prompt_lower or "lofi" in prompt_lower:
+        _add_tag("lo-fi")
+    
+    # Build space-separated string
+    result = " ".join(tags)
+    
+    # Enforce max 80 chars — smart truncation
+    if len(result) > 80:
+        # Priority: genre tags + vocal + instruments, drop mood/production first
+        # Try removing from the end
+        while len(result) > 80 and tags:
+            tags.pop()
+            result = " ".join(tags)
+    
+    logger.info(f"[YuE Enrich] '{raw_prompt}' → '{result}' ({len(result)} chars)")
+    return result
+
+
 def get_enrichment_preview(raw_prompt: str) -> dict:
     """Get a preview of what the enrichment would produce (for frontend display)."""
     enriched = enrich_style_prompt(raw_prompt)

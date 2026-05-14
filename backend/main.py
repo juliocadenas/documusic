@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 import httpx
 
 # DocuMusic modules
-from prompt_enricher import enrich_style_prompt, get_enrichment_preview, get_lyrics_enrichment
+from prompt_enricher import enrich_style_prompt, enrich_style_for_yue, get_enrichment_preview, get_lyrics_enrichment
 from gpu_watchdog import start_watchdog, get_watchdog_status, can_generate
 
 logging.basicConfig(level=logging.INFO)
@@ -72,9 +72,9 @@ def _patch_infer_py():
             patched = True
             logger.info("[Startup] infer.py: flash_attention_2 → eager")
 
-        # 2. Parchar from_pretrained() con 8-bit quantization (PCIe estable en RTX 5080)
+        # 2. Parchar from_pretrained() con conditional 8-bit/16-bit quantization
         import re
-        if 'yue_8bit_stable_v1_applied' not in content:
+        if 'yue_cond_quant_v2_applied' not in content:
             # Find all AutoModelForCausalLM.from_pretrained(...) calls
             fp_pattern = re.compile(r'AutoModelForCausalLM\.from_pretrained\(')
             matches = list(fp_pattern.finditer(content))
@@ -98,34 +98,34 @@ def _patch_infer_py():
                 if not first_arg_match:
                     continue
                 model_arg = first_arg_match.group(1)
-                # Build clean replacement call WITH 8-bit quantization
-                # Required for PCIe stability on RTX 5080 (reduces VRAM ~14GB → ~7GB)
+                # Build replacement with conditional 8-bit/16-bit quantization
+                # YUE_USE_8BIT env var controls which path is used at runtime
                 new_call = (
+                    f'(AutoModelForCausalLM.from_pretrained(\n'
+                    f'    {model_arg}, attn_implementation="eager", load_in_8bit=True, device_map="auto",\n'
+                    f') if os.environ.get(\'YUE_USE_8BIT\', \'1\') == \'1\' else\n'
                     f'AutoModelForCausalLM.from_pretrained(\n'
-                    f'    {model_arg},\n'
-                    f'    attn_implementation="eager",\n'
-                    f'    load_in_8bit=True,\n'
-                    f'    device_map="auto",\n'
-                    f')'
+                    f'    {model_arg}, attn_implementation="eager", torch_dtype=torch.bfloat16,\n'
+                    f'))'
                 )
                 content = content[:start] + new_call + content[end+1:]
                 patched = True
-                logger.info(f"[Startup] infer.py: patched from_pretrained({model_arg}) → 8-bit quantization (stable)")
+                logger.info(f"[Startup] infer.py: patched from_pretrained({model_arg}) → conditional 8-bit/16-bit")
 
-            # Comment out model.to(device) — incompatible with device_map="auto"
+            # Wrap model.to(device) in conditional — only for 16-bit mode
             lines = content.split('\n')
             new_lines = []
             for line in lines:
                 stripped = line.lstrip()
                 if re.match(r'(model\w*\s*=\s*)?model\w*\.to\(', stripped) and '# [DocuMusic]' not in line:
                     indent = line[:len(line) - len(stripped)]
-                    new_lines.append(f'{indent}# {stripped} # [DocuMusic] incompatible with device_map="auto"')
+                    new_lines.append(f'{indent}if os.environ.get(\'YUE_USE_8BIT\', \'1\') != \'1\': {stripped} # [DocuMusic] conditional .to(device)')
                     patched = True
                 else:
                     new_lines.append(line)
             content = '\n'.join(new_lines)
 
-            content += "\n# yue_8bit_stable_v1_applied = True\n"
+            content += "\n# yue_cond_quant_v2_applied = True\n"
 
         # 3. Parchar torchaudio.save para usar soundfile como fallback (torchcodec no instalado)
         if 'torchaudio_patched_v3' not in content:
@@ -686,6 +686,7 @@ async def generate(req: dict, background_tasks: BackgroundTasks):
     lyrics = req.get("lyrics", "")
     style_prompt = req.get("style_prompt", "")
     num_variants = req.get("num_variants", VARIANT_CONFIG["count"])
+    quantization = req.get("quantization", "8bit")
     job_id = str(uuid.uuid4())[:8]
 
     # 🐕 Watchdog check: can GPU handle a new generation?
@@ -712,10 +713,13 @@ async def generate(req: dict, background_tasks: BackgroundTasks):
     if not style_prompt.strip():
         style_prompt = "pop rock, melodic male vocal, energetic"
 
-    # 🎨 PROMPT ENRICHMENT
+    # 🎨 PROMPT ENRICHMENT — use YuE-specific enrichment for YuE model
     original_prompt = style_prompt
-    style_prompt = enrich_style_prompt(style_prompt)
-    logger.info(f"[Generate] Prompt enriquecido: '{original_prompt}' → '{style_prompt}'")
+    if model == "yue":
+        style_prompt = enrich_style_for_yue(style_prompt)
+    else:
+        style_prompt = enrich_style_prompt(style_prompt)
+    logger.info(f"[Generate] Prompt enriquecido ({model}): '{original_prompt}' → '{style_prompt}'")
 
     # Sanitizar la letra
     clean_lyrics = sanitize_lyrics(lyrics)
@@ -815,7 +819,7 @@ async def generate(req: dict, background_tasks: BackgroundTasks):
 
     background_tasks.add_task(
         run_yue_inference_multi,
-        job_id, clean_lyrics, style_prompt, yue_script, seeds
+        job_id, clean_lyrics, style_prompt, yue_script, seeds, quantization
     )
 
     return {
@@ -874,9 +878,12 @@ def _build_inference_cmd(tmp_dir: str, output_path: str, yue_script: str, seed: 
     return cmd, cwd
 
 
-def _get_env(yue_inference_dir: str) -> dict:
-    """Get environment variables for YuE inference."""
+def _get_env(yue_inference_dir: str, quantization: str = "8bit") -> dict:
+    """Get environment variables for YuE inference. quantization: '8bit' or '16bit'."""
     env = os.environ.copy()
+    # Set YUE_USE_8BIT env var for conditional quantization in patched infer.py
+    env["YUE_USE_8BIT"] = "1" if quantization == "8bit" else "0"
+    logger.info(f"[Inference] Quantization: {quantization} (YUE_USE_8BIT={env['YUE_USE_8BIT']})")
     paths = [
         yue_inference_dir,
         f"{yue_inference_dir}/xcodec_mini_infer",
@@ -996,10 +1003,11 @@ def _finalize_audio(source_path: str, job_id: str, variant_idx: int) -> str:
         return final_raw
 
 
-def run_yue_inference_multi(job_id: str, lyrics: str, style_prompt: str, yue_script: str, seeds: list):
+def run_yue_inference_multi(job_id: str, lyrics: str, style_prompt: str, yue_script: str, seeds: list, quantization: str = "8bit"):
     """
     FASE 0.3: Multi-variant generation.
     Generates multiple variants with different seeds, applies mastering to each.
+    quantization: '8bit' or '16bit' — controls model loading behavior.
     """
     try:
         import threading
@@ -1025,7 +1033,7 @@ def run_yue_inference_multi(job_id: str, lyrics: str, style_prompt: str, yue_scr
 
             # Build command with optimized parameters
             cmd, yue_inference_dir = _build_inference_cmd(tmp_dir, variant_output, yue_script, seed)
-            env = _get_env(yue_inference_dir)
+            env = _get_env(yue_inference_dir, quantization)
 
             logger.info(f"[YuE] 🚀 Variant {variant_label} | Seed: {seed} | CMD: {' '.join(cmd)}")
 
