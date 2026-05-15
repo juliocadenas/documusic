@@ -495,7 +495,7 @@ VALID_SECTION_TAGS = {'verse', 'chorus', 'bridge', 'intro', 'outro'}
 # FASE 0.1: Parámetros de inferencia optimizados
 # ============================================================
 YUE_PARAMS = {
-    "max_new_tokens": 1500,       # 3000 OOM en softmax. 1500 = ~15s por segmento
+    "max_new_tokens": 1000,       # 1500 OOM en softmax con 16-bit. 1000 = seguro para 16GB VRAM
     "run_n_segments": 3,          # 3 segmentos = verse+chorus+verse = ~45s total (dinámico)
     "repetition_penalty": 1.2,    # Aumentado de 1.1 → 1.2 para más variedad
     "stage2_batch_size": 1,       # Reducido de 4 → 1 (crítico para VRAM)
@@ -893,11 +893,28 @@ async def generate(req: dict, background_tasks: BackgroundTasks):
     if lyrics_translated:
         logger.info(f"[Generate] ⚠️ Lyrics traducidas español→inglés para modelo English-only")
 
-    # Calcular run_n_segments dinámico basado en secciones de lyrics
+    # TRUNCAR lyrics a máximo 4 secciones para evitar OOM en 16GB VRAM
+    # (input sequence largo → softmax alloc > 1 GiB → OOM)
     import re as _re
-    section_count = len(_re.findall(r'\[(?:verse|chorus|bridge|intro|outro)\]', clean_lyrics, flags=_re.IGNORECASE))
-    dynamic_segments = min(max(section_count, 2), 5)  # Entre 2 y 5 segmentos
-    logger.info(f"[Generate] Secciones detectadas: {section_count} → run_n_segments={dynamic_segments}")
+    MAX_SECTIONS = 4
+    sections = _re.split(r'(\[(?:verse|chorus|bridge|intro|outro)\])', clean_lyrics, flags=_re.IGNORECASE)
+    # sections = ['', '[verse]', '\nlines\n', '[chorus]', '\nlines\n', ...]
+    reconstructed = []
+    section_count = 0
+    for part in sections:
+        if _re.match(r'\[(?:verse|chorus|bridge|intro|outro)\]$', part, _re.IGNORECASE):
+            section_count += 1
+            if section_count > MAX_SECTIONS:
+                break
+        reconstructed.append(part)
+    truncated_lyrics = ''.join(reconstructed).strip()
+    if len(truncated_lyrics) < len(clean_lyrics):
+        logger.info(f"[Generate] ✂️ Lyrics truncadas: {len(clean_lyrics)} → {len(truncated_lyrics)} chars ({section_count} secciones)")
+    clean_lyrics = truncated_lyrics
+
+    # run_n_segments FIJO en 2 (probado que funciona sin OOM en 16-bit)
+    dynamic_segments = 2  # Fixed: 2 segments = ~30s, safe for 16-bit on 16GB VRAM
+    logger.info(f"[Generate] Secciones: {min(section_count, MAX_SECTIONS)} → run_n_segments={dynamic_segments} (fixed for VRAM safety)")
 
     # Generate seeds
     seeds = []
