@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import './App.css';
 
-const LoadingOverlay = ({ status, logs, numVariants, completedVariants, startTime, serverAlive, gpuStats, subprocessAlive, secondsSinceActivity, previewUrl, totalSegments, completedSegments }) => {
+const LoadingOverlay = ({ status, logs, numVariants, completedVariants, startTime, serverAlive, gpuStats, subprocessAlive, secondsSinceActivity, previewUrl, totalSegments, completedSegments, reconnecting }) => {
   const consoleRef = React.useRef(null);
   const [elapsed, setElapsed] = React.useState(0);
 
@@ -65,6 +65,19 @@ const LoadingOverlay = ({ status, logs, numVariants, completedVariants, startTim
               : `${numVariants} variante(s) · ${completedVariants}/${numVariants} completada(s) · Esto suele tardar 5-10 minutos`
             : 'Preparando entorno de ejecución...'}
         </div>
+
+        {/* === RECONNECTION BANNER === */}
+        {reconnecting && (
+          <div style={{
+            background: 'rgba(251,191,36,0.15)', borderRadius: 10, padding: '10px 20px',
+            margin: '8px auto', maxWidth: '90%', border: '1px solid rgba(251,191,36,0.4)',
+            animation: 'pulse 2s ease-in-out infinite',
+          }}>
+            <div style={{ fontSize: '13px', color: '#fbbf24', textAlign: 'center' }}>
+              🔄 Reconectando al servidor... el proceso sigue activo en Madrid
+            </div>
+          </div>
+        )}
 
         {/* === PROGRESSIVE PREVIEW PLAYER === */}
         {previewUrl && status === 'generating' && (
@@ -260,6 +273,8 @@ export default function App() {
   const [previewUrl, setPreviewUrl] = useState(null);
   const [totalSegments, setTotalSegments] = useState(0);
   const [completedSegments, setCompletedSegments] = useState(0);
+  const [reconnecting, setReconnecting] = useState(false); // 🔄 Reconnection indicator
+  const [activeJobId, setActiveJobId] = useState(null);     // Track active job for reconnection
 
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type });
@@ -365,13 +380,47 @@ export default function App() {
   useEffect(() => { fetchHistory(); }, []);
   useEffect(() => { if (result?.audio_url) fetchHistory(); }, [result]);
 
-  const pollJob = (jobId) => {
+  // 🔄 Reconnect to active job from localStorage on page load
+  useEffect(() => {
+    const savedJobId = localStorage.getItem('documusic_active_job');
+    const savedStartTime = localStorage.getItem('documusic_job_start');
+    if (savedJobId && !loading && genStatus === 'idle') {
+      console.log('[Reconnect] Found active job in localStorage:', savedJobId);
+      setLoading(true);
+      setGenStatus('generating');
+      setStartTime(savedStartTime ? parseInt(savedStartTime) : Date.now());
+      setActiveJobId(savedJobId);
+      pollJob(savedJobId, true); // isReconnect = true
+    }
+  }, []); // Only on mount
+
+  // Helper: save active job to localStorage
+  const _saveActiveJob = (jobId) => {
+    localStorage.setItem('documusic_active_job', jobId);
+    localStorage.setItem('documusic_job_start', Date.now().toString());
+    setActiveJobId(jobId);
+  };
+
+  // Helper: clear active job from localStorage
+  const _clearActiveJob = () => {
+    localStorage.removeItem('documusic_active_job');
+    localStorage.removeItem('documusic_job_start');
+    setActiveJobId(null);
+  };
+
+  const pollJob = (jobId, isReconnect = false) => {
     let consecutiveErrors = 0;
-    const MAX_ERRORS = 10; // After 10 consecutive errors (~15s), show backend unreachable error
+    const MAX_RECONNECT_ERRORS = 120; // ~3 minutes of errors before giving up (120 * 1500ms)
+    if (isReconnect) {
+      setReconnecting(true);
+      setLogs(prev => [...prev, '🔄 Reconectando al proceso activo...']);
+    }
     const iv = setInterval(async () => {
       try {
-        const res = await axios.get(`/api/job/${jobId}`, { timeout: 10000 });
-        consecutiveErrors = 0; // Reset on success
+        const res = await axios.get(`/api/job/${jobId}`, { timeout: 60000 }); // 60s timeout — CUDA inference can block
+        consecutiveErrors = 0;
+        setReconnecting(false); // Clear reconnect indicator on success (always safe to call)
+
         if (res.data.logs && res.data.logs.length > 0) setLogs(res.data.logs);
         if (res.data.completed_variants !== undefined) setCompletedVariants(res.data.completed_variants);
         if (res.data.gpu_stats) setGpuStats(res.data.gpu_stats);
@@ -383,6 +432,7 @@ export default function App() {
         
         if (res.data.status === 'done') {
           clearInterval(iv);
+          _clearActiveJob();
           setResult(prev => ({
             ...prev,
             audio_url: res.data.audio_url,
@@ -393,11 +443,14 @@ export default function App() {
           setSelectedVariant(res.data.best_variant || 0);
           setGenStatus('done');
           setLoading(false);
+          setReconnecting(false);
           showToast(`✅ ¡Canción lista! ${res.data.variants?.length || 1} variante(s) generada(s)`);
         } else if (res.data.status === 'error') {
           clearInterval(iv);
+          _clearActiveJob();
           setGenStatus('idle');
           setLoading(false);
+          setReconnecting(false);
           const errMsg = res.data.error || 'Error desconocido';
           const detail = res.data.error_detail || '';
           setLogs(prev => [...(res.data.logs || prev), `❌ ERROR: ${errMsg}`]);
@@ -407,10 +460,18 @@ export default function App() {
         }
       } catch (e) {
         consecutiveErrors++;
-        if (consecutiveErrors >= MAX_ERRORS) {
+        // Show reconnecting indicator on first error
+        if (consecutiveErrors === 1) {
+          setReconnecting(true);
+          setLogs(prev => [...prev, `⚠️ Conexión perdida, reintentando... (${e.code || e.message})`]);
+        }
+        // Only give up after MAX_RECONNECT_ERRORS consecutive errors (~3 minutes)
+        if (consecutiveErrors >= MAX_RECONNECT_ERRORS) {
           clearInterval(iv);
+          _clearActiveJob();
           setGenStatus('idle');
           setLoading(false);
+          setReconnecting(false);
           const errorMsg = e.code === 'ECONNREFUSED'
             ? 'Backend caído — el servidor se reiniciará automáticamente'
             : e.code === 'ETIMEDOUT'
@@ -421,6 +482,7 @@ export default function App() {
           setErrorDetail('El backend se ha desconectado. Esto suele ocurrir por un error de CUDA/GPU. El servidor debería reiniciarse automáticamente en unos minutos.');
           showToast('❌ Backend caído — intenta de nuevo en 1-2 minutos', 'error');
         }
+        // Otherwise: keep trying silently (don't stop polling!)
       }
     }, 1500);
   };
@@ -446,10 +508,11 @@ export default function App() {
         model,
         num_variants: numVariants,
         quantization,
-      });
+      }, { timeout: 120000 }); // 2min timeout for initial POST — model loading can be slow
       setResult(res.data);
       if (res.data.model_status === 'generating') {
         setGenStatus('generating');
+        _saveActiveJob(res.data.job_id);
         pollJob(res.data.job_id);
       } else {
         setLoading(false);
@@ -458,6 +521,7 @@ export default function App() {
     } catch (e) {
       setLoading(false);
       setGenStatus('idle');
+      _clearActiveJob();
       setError('Error al conectar con el servidor de Madrid.');
       showToast('❌ Error de conexión', 'error');
     }
@@ -480,7 +544,7 @@ export default function App() {
 
   return (
     <div className="app">
-      {loading && <LoadingOverlay status={genStatus} logs={logs} numVariants={numVariants} completedVariants={completedVariants} startTime={startTime} serverAlive={serverAlive} gpuStats={gpuStats} subprocessAlive={subprocessAlive} secondsSinceActivity={secondsSinceActivity} previewUrl={previewUrl} totalSegments={totalSegments} completedSegments={completedSegments} />}
+      {loading && <LoadingOverlay status={genStatus} logs={logs} numVariants={numVariants} completedVariants={completedVariants} startTime={startTime} serverAlive={serverAlive} gpuStats={gpuStats} subprocessAlive={subprocessAlive} secondsSinceActivity={secondsSinceActivity} previewUrl={previewUrl} totalSegments={totalSegments} completedSegments={completedSegments} reconnecting={reconnecting} />}
       {toast && <Toast msg={toast.msg} type={toast.type} />}
 
       {/* ---- HEADER ---- */}
