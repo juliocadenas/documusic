@@ -316,10 +316,10 @@ export default function App() {
 
   const pollJob = (jobId) => {
     let consecutiveErrors = 0;
-    const MAX_ERRORS = 5; // After 5 consecutive errors (~7.5s), show backend unreachable error
+    const MAX_ERRORS = 10; // After 10 consecutive errors (~15s), show backend unreachable error
     const iv = setInterval(async () => {
       try {
-        const res = await axios.get(`/api/job/${jobId}`, { timeout: 5000 });
+        const res = await axios.get(`/api/job/${jobId}`, { timeout: 10000 });
         consecutiveErrors = 0; // Reset on success
         if (res.data.logs && res.data.logs.length > 0) setLogs(res.data.logs);
         if (res.data.completed_variants !== undefined) setCompletedVariants(res.data.completed_variants);

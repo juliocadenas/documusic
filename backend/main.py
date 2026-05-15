@@ -1032,12 +1032,12 @@ def _finalize_audio(source_path: str, job_id: str, variant_idx: int) -> str:
 
     if variant_idx == 0:
         # Primary variant: job_id.mp3
-        final_raw = f"{OUTPUT_DIR}/{job_id}.mp3"
         final_mastered = f"{OUTPUT_DIR}/{job_id}.mp3"
+        final_raw = f"{OUTPUT_DIR}/{job_id}_raw.mp3"
     else:
         # Additional variants: job_id_v2.mp3, job_id_v3.mp3
-        final_raw = f"{OUTPUT_DIR}/{job_id}_v{variant_idx + 1}.mp3"
         final_mastered = f"{OUTPUT_DIR}/{job_id}_v{variant_idx + 1}.mp3"
+        final_raw = f"{OUTPUT_DIR}/{job_id}_v{variant_idx + 1}_raw.mp3"
 
     # Convert to MP3 if needed
     if source_path.endswith('.mp3'):
@@ -1053,10 +1053,20 @@ def _finalize_audio(source_path: str, job_id: str, variant_idx: int) -> str:
     try:
         mastered_path = master_audio_simple(final_raw, final_mastered)
         logger.info(f"[Master] ✅ Variant {variant_idx + 1} mastered: {mastered_path}")
+        # Clean up intermediate raw file
+        try:
+            if final_raw != final_mastered and os.path.exists(final_raw):
+                os.remove(final_raw)
+        except Exception:
+            pass
         return mastered_path
     except Exception as e:
         logger.warning(f"[Master] Mastering failed for variant {variant_idx + 1}: {e}")
-        return final_raw
+        # Rename raw to final since mastering failed
+        if final_raw != final_mastered:
+            import shutil
+            shutil.move(final_raw, final_mastered)
+        return final_mastered
 
 
 def run_yue_inference_multi(job_id: str, lyrics: str, style_prompt: str, yue_script: str, seeds: list, quantization: str = "8bit"):
