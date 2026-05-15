@@ -495,8 +495,8 @@ VALID_SECTION_TAGS = {'verse', 'chorus', 'bridge', 'intro', 'outro'}
 # FASE 0.1: Parámetros de inferencia optimizados
 # ============================================================
 YUE_PARAMS = {
-    "max_new_tokens": 2000,       # 3000 causa OOM en softmax con secuencias largas. 2000 estable en RTX 5080 8-bit
-    "run_n_segments": 2,          # 2 segmentos. 3 causa OOM por acumulación de KV cache
+    "max_new_tokens": 1500,       # 2000 OOM en softmax. 1500 conservador para 16-bit en RTX 5080
+    "run_n_segments": 1,          # 1 segmento para maximizar calidad vocal en 16-bit
     "repetition_penalty": 1.2,    # Aumentado de 1.1 → 1.2 para más variedad
     "stage2_batch_size": 1,       # Reducido de 4 → 1 (crítico para VRAM)
     "rescale": True,              # Evitar clipping en la salida
@@ -740,7 +740,7 @@ async def generate(req: dict, background_tasks: BackgroundTasks):
     lyrics = req.get("lyrics", "")
     style_prompt = req.get("style_prompt", "")
     num_variants = req.get("num_variants", VARIANT_CONFIG["count"])
-    quantization = req.get("quantization", "8bit")
+    quantization = req.get("quantization", "16bit")
     job_id = str(uuid.uuid4())[:8]
 
     # 🐕 Watchdog check: can GPU handle a new generation?
