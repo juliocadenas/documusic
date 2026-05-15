@@ -495,8 +495,8 @@ VALID_SECTION_TAGS = {'verse', 'chorus', 'bridge', 'intro', 'outro'}
 # FASE 0.1: Parámetros de inferencia optimizados
 # ============================================================
 YUE_PARAMS = {
-    "max_new_tokens": 1500,       # 2000 OOM en softmax. 1500 conservador para 16-bit en RTX 5080
-    "run_n_segments": 1,          # 1 segmento para maximizar calidad vocal en 16-bit
+    "max_new_tokens": 3000,       # Aumentado de 1500 → 3000 para ~30s audio
+    "run_n_segments": 2,          # Aumentado de 1 → 2 para verse+chorus
     "repetition_penalty": 1.2,    # Aumentado de 1.1 → 1.2 para más variedad
     "stage2_batch_size": 1,       # Reducido de 4 → 1 (crítico para VRAM)
     "rescale": True,              # Evitar clipping en la salida
