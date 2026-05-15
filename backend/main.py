@@ -622,22 +622,30 @@ def sanitize_lyrics(lyrics: str) -> tuple[str, bool]:
     # 0. Detectar y traducir español → inglés
     formatted, was_translated = _translate_to_english(formatted)
 
-    # 1. Eliminar tags no estándar (cualquier [xxx] que NO sea una sección válida)
-    #    Esto incluye [Verse 1], [Verse 2], [Genre: ...], etc.
+    # 1. Eliminar tags numerados [Verse 1], [Chorus 2], etc. (antes del cleanup general)
     formatted = re.sub(
-        r'\[(?!verse\b|chorus\b|bridge\b|intro\b|outro\b)[^\]]+\]',
+        r'\[(?:verse|chorus|bridge|intro|outro)\s+\d+\]',
         '',
         formatted,
         flags=re.IGNORECASE
-    ).strip()
+    )
 
-    # 2. Eliminar prefijos numerados como "1.-", "2.-", "3.-", "N."
-    formatted = re.sub(r'^\s*\d+[\.\-]+\s*', '', formatted, flags=re.MULTILINE)
+    # 2. Eliminar tags no estándar (cualquier [xxx] que NO sea exactamente [verse], [chorus], etc.)
+    #    Usamos \] en vez de \b para solo permitir coincidencias exactas
+    formatted = re.sub(
+        r'\[(?!verse\]|chorus\]|bridge\]|intro\]|outro\])[^\]]+\]',
+        '',
+        formatted,
+        flags=re.IGNORECASE
+    )
 
-    # 3. Limpiar líneas vacías excesivas (máximo 2 saltos consecutivos)
+    # 3. Eliminar prefijos numerados como "1.-", "2.-", "3.-", "N.", "N) "
+    formatted = re.sub(r'^\s*\d+[\.\)\-]+\s*', '', formatted, flags=re.MULTILINE)
+
+    # 4. Limpiar líneas vacías excesivas (máximo 2 saltos consecutivos)
     formatted = re.sub(r'\n{3,}', '\n\n', formatted)
 
-    # 4. Normalizar tags de sección a minúscula (YuE espera [verse] no [Verse])
+    # 5. Normalizar tags de sección a minúscula (YuE espera [verse] no [Verse])
     for tag in VALID_SECTION_TAGS:
         formatted = re.sub(
             rf'\[{tag}\]', f'[{tag}]',
@@ -645,7 +653,7 @@ def sanitize_lyrics(lyrics: str) -> tuple[str, bool]:
             flags=re.IGNORECASE
         )
 
-    # 5. Verificar si quedaron secciones válidas
+    # 6. Verificar si quedaron secciones válidas
     has_sections = any(
         f'[{tag}]' in formatted.lower()
         for tag in VALID_SECTION_TAGS
