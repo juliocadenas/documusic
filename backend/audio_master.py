@@ -167,8 +167,13 @@ def _build_master_chain(quality: str = "high") -> str:
 
 def master_audio_simple(input_path: str, output_path: str = None) -> str:
     """
-    Simplified mastering for quick processing.
-    Just loudnorm + limiter + fade.
+    Vocal-preserving mastering for YuE output.
+    
+    Key design: Boost vocal presence (2-4kHz) before loudness normalization
+    so that the loudnorm doesn't squash the vocals. The order matters:
+    EQ first → then normalize → then limit.
+    
+    Chain: highpass → vocal presence EQ → warmth cut → loudnorm → limiter → fade
     """
     if not os.path.exists(input_path):
         raise FileNotFoundError(f"Input file not found: {input_path}")
@@ -177,13 +182,17 @@ def master_audio_simple(input_path: str, output_path: str = None) -> str:
         base = os.path.splitext(input_path)[0]
         output_path = f"{base}_mastered.mp3"
 
-    # Simple but effective chain
+    # Vocal-preserving mastering chain
+    # Order matters! EQ before loudnorm so vocals aren't squashed
     filters = [
-        "loudnorm=I=-14:TP=-1:LRA=11",  # Streaming-standard loudness
-        "highpass=f=40",                   # Remove sub-bass rumble
-        "alimiter=limit=0.95",             # Prevent clipping
-        "afade=t=in:st=0:d=0.3",          # Short fade in
-        "afade=t=out:st=9998:d=1.5",      # Gentle fade out
+        "highpass=f=30",                          # Remove only extreme sub-bass
+        "equalizer=f=3000:t=o:w=2:g=3",           # Vocal presence boost (2-4kHz, +3dB)
+        "equalizer=f=200:t=o:w=1:g=-1.5",         # Reduce boominess (200Hz, -1.5dB)
+        "equalizer=f=8000:t=h:w=1.5:g=1",         # Air/brightness boost (8kHz+, +1dB)
+        "loudnorm=I=-14:TP=-1:LRA=11",             # Streaming-standard loudness
+        "alimiter=limit=0.95:attack=5:release=50",  # Soft limiter
+        "afade=t=in:st=0:d=0.3",                   # Short fade in
+        "afade=t=out:st=9998:d=1.5",               # Gentle fade out
     ]
 
     cmd = [
@@ -193,7 +202,7 @@ def master_audio_simple(input_path: str, output_path: str = None) -> str:
         output_path
     ]
 
-    logger.info(f"[Master] Simple mastering: {input_path} → {output_path}")
+    logger.info(f"[Master] Vocal-preserving mastering: {input_path} → {output_path}")
 
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
