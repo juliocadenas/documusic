@@ -1558,6 +1558,80 @@ def get_job(job_id: str):
     return job
 
 
+@app.get("/api/jobs/history")
+def get_jobs_history():
+    """Lista todos los jobs completados (en memoria + escaneo de outputs)."""
+    history = []
+    
+    # 1. Jobs en memoria con status "done"
+    for job_id, job in jobs.items():
+        if job.get("status") == "done":
+            variants = job.get("variants", [])
+            best = job.get("best_variant", 0)
+            v = variants[best] if best < len(variants) else (variants[0] if variants else {})
+            history.append({
+                "job_id": job_id,
+                "status": "done",
+                "model": job.get("model", "yue"),
+                "style": job.get("style_prompt", ""),
+                "audio_url": job.get("audio_url"),
+                "duration": v.get("duration", 0),
+                "lufs": v.get("lufs", 0),
+                "seed": v.get("seed"),
+                "created": job.get("created", 0),
+                "source": "memory",
+            })
+    
+    # 2. Escanear outputs/ para MP3s no en memoria (persistidos)
+    try:
+        output_dir = "/app/outputs"
+        existing_ids = set(jobs.keys())
+        if os.path.isdir(output_dir):
+            for f in sorted(os.listdir(output_dir), reverse=True):
+                if f.endswith(".mp3") and not f.startswith("test_"):
+                    # Extraer job_id del nombre (formato: {job_id}.mp3 o {job_id}_raw.mp3)
+                    job_id = f.replace("_raw.mp3", "").replace(".mp3", "")
+                    if job_id in existing_ids:
+                        continue
+                    filepath = os.path.join(output_dir, f)
+                    try:
+                        file_stat = os.stat(filepath)
+                        # Get duration with ffprobe
+                        dur = 0
+                        try:
+                            result = subprocess.run(
+                                ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+                                 "-of", "csv=p=0", filepath],
+                                capture_output=True, text=True, timeout=5
+                            )
+                            if result.returncode == 0 and result.stdout.strip():
+                                dur = float(result.stdout.strip())
+                        except Exception:
+                            pass
+                        history.append({
+                            "job_id": job_id,
+                            "status": "done",
+                            "model": "unknown",
+                            "style": "",
+                            "audio_url": f"/outputs/{f}",
+                            "duration": dur,
+                            "lufs": 0,
+                            "seed": None,
+                            "created": file_stat.st_ctime,
+                            "file_size": file_stat.st_size,
+                            "source": "disk",
+                        })
+                        existing_ids.add(job_id)
+                    except Exception:
+                        pass
+    except Exception as e:
+        logger.warning(f"[History] Error scanning outputs: {e}")
+    
+    # Sort by creation time (newest first)
+    history.sort(key=lambda x: x.get("created", 0), reverse=True)
+    return {"jobs": history, "total": len(history)}
+
+
 @app.get("/api/gpu")
 def gpu_status():
     """🐕 GPU Watchdog status endpoint — polled by frontend every 5s."""

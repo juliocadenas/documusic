@@ -1038,6 +1038,69 @@ select option { background: var(--surface2); }
   font-style: italic;
 }
 
+/* ---- HISTORY SECTION ---- */
+.history-section {
+  margin-top: 32px;
+  padding: 20px;
+  background: var(--surface);
+  border-radius: 16px;
+  border: 1px solid rgba(255,255,255,0.06);
+}
+.history-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 0;
+}
+.history-list {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.history-item {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+  background: rgba(255,255,255,0.03);
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,0.04);
+}
+.history-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.history-title {
+  font-size: 0.88rem;
+  color: var(--text);
+}
+.history-model {
+  font-weight: 600;
+}
+.history-style {
+  color: var(--text-dim);
+  font-size: 0.82rem;
+}
+.history-meta {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.history-player {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.history-player audio {
+  flex: 1;
+  border-radius: 8px;
+  height: 36px;
+}
+
 /* ---- GPU WATCHDOG ALERT ---- */
 .gpu-alert {
   display: flex;

@@ -81,10 +81,12 @@ LYRICS_EOF
     out, err = run(ssh, setup_cmd, timeout=15)
     print(f"   Setup: {out}")
 
-    # Build inference command
+    # Build inference command (16-bit: YUE_USE_8BIT=0)
     infer_cmd = f"""docker exec -d documusic_backend bash -c '
         cd /opt/YuE/inference && \
-        PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+        export YUE_USE_8BIT=0 && \
+        export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True && \
+        export PYTHONPATH=/opt/YuE/inference:/opt/YuE/inference/xcodec_mini_infer:/opt/YuE/inference/xcodec_mini_infer/models:/opt/YuE/inference/vocos:\$PYTHONPATH && \
         python3 infer.py \
             --stage1_model /app/models/YuE-s1 \
             --stage2_model /app/models/YuE-s2 \

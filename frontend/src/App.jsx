@@ -218,6 +218,8 @@ export default function App() {
   const [gpuStats, setGpuStats] = useState(null);
   const [subprocessAlive, setSubprocessAlive] = useState(undefined);
   const [secondsSinceActivity, setSecondsSinceActivity] = useState(undefined);
+  const [history, setHistory] = useState([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type });
@@ -313,6 +315,15 @@ export default function App() {
     }, 800); // Debounce 800ms
     return () => clearTimeout(timer);
   }, [stylePrompt]);
+
+  // 📋 Fetch history on load and after generation completes
+  const fetchHistory = () => {
+    axios.get('/api/jobs/history').then(r => {
+      setHistory(r.data.jobs || []);
+    }).catch(() => {});
+  };
+  useEffect(() => { fetchHistory(); }, []);
+  useEffect(() => { if (result?.audio_url) fetchHistory(); }, [result]);
 
   const pollJob = (jobId) => {
     let consecutiveErrors = 0;
@@ -694,6 +705,48 @@ export default function App() {
                     />
                   ))}
                 </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ---- HISTORIAL ---- */}
+        {history.length > 0 && (
+          <div className="history-section">
+            <div className="history-header" onClick={() => setHistoryOpen(!historyOpen)} style={{ cursor: 'pointer' }}>
+              <span className="section-title" style={{ marginBottom: 0 }}>📋 Historial ({history.length})</span>
+              <span style={{ fontSize: '0.8rem', color: 'var(--text-dim)' }}>{historyOpen ? '▲ ocultar' : '▼ mostrar'}</span>
+            </div>
+            {historyOpen && (
+              <div className="history-list">
+                {history.map((h, i) => {
+                  const audioUrl = h.audio_url?.startsWith('http') ? h.audio_url : `/api${h.audio_url}`;
+                  const date = h.created ? new Date(h.created * 1000).toLocaleString() : '';
+                  return (
+                    <div key={h.job_id || i} className="history-item">
+                      <div className="history-info">
+                        <div className="history-title">
+                          <span className="history-model">{h.model === 'yue' ? '🎵 YuE' : h.model === 'acestep' ? '🎹 ACE-Step' : '🎵'}</span>
+                          {h.style && <span className="history-style"> · {h.style.substring(0, 50)}{h.style.length > 50 ? '...' : ''}</span>}
+                        </div>
+                        <div className="history-meta">
+                          {h.duration > 0 && <span>{h.duration.toFixed(1)}s</span>}
+                          {h.lufs !== 0 && <span> · {h.lufs.toFixed(1)} LUFS</span>}
+                          {date && <span> · {date}</span>}
+                          {h.file_size && <span> · {(h.file_size / 1024 / 1024).toFixed(1)}MB</span>}
+                        </div>
+                      </div>
+                      {h.audio_url && (
+                        <div className="history-player">
+                          <audio controls src={audioUrl} preload="none" style={{ height: 36 }} />
+                          <a href={audioUrl} download={`${h.job_id}.mp3`} className="download-btn" style={{ fontSize: '0.75rem', padding: '4px 10px' }}>
+                            ⬇
+                          </a>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>
