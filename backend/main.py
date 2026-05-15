@@ -35,6 +35,8 @@ MODELS_DIR = "/app/models"
 ACESTEP_DIR = "/opt/ACE-Step"
 ACESTEP_MODEL_ID = "ACE-Step/ACE-Step-v1-3.5B"
 ACESTEP_MODEL_DIR = f"{MODELS_DIR}/ACE-Step-v1-3.5B"
+HEARTMULA_DIR = "/opt/heartlib"
+HEARTMULA_CKPT_DIR = f"{MODELS_DIR}/HeartMuLa"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs("/app/tmp", exist_ok=True)
 
@@ -797,6 +799,11 @@ def status():
         "vram_free": vram_free,
         "yue_ready": os.path.exists(f"{MODELS_DIR}/YuE-s1"),
         "ace_step_ready": os.path.exists(f"{ACESTEP_DIR}/acestep"),
+        "heartmula_ready": (
+            os.path.exists(f"{HEARTMULA_DIR}/examples/run_music_generation.py")
+            and os.path.exists(f"{HEARTMULA_CKPT_DIR}/HeartMuLa-oss-3B")
+            and os.path.exists(f"{HEARTMULA_CKPT_DIR}/HeartCodec-oss")
+        ),
         "yue_script": yue_script,
         "yue_files": yue_files[:20],
         "model_files": model_files,
@@ -806,6 +813,11 @@ def status():
         "models_available": {
             "yue": os.path.exists(f"{MODELS_DIR}/YuE-s1") and yue_script is not None,
             "ace_step": os.path.exists(f"{ACESTEP_DIR}/acestep"),
+            "heartmula": (
+                os.path.exists(f"{HEARTMULA_DIR}/examples/run_music_generation.py")
+                and os.path.exists(f"{HEARTMULA_CKPT_DIR}/HeartMuLa-oss-3B")
+                and os.path.exists(f"{HEARTMULA_CKPT_DIR}/HeartCodec-oss")
+            ),
         },
     }
 
@@ -983,6 +995,62 @@ async def generate(req: dict, background_tasks: BackgroundTasks):
             "generated_lyrics": clean_lyrics,
             "audio_url": None,
             "message": f"🎵 Generando {num_variants} variante(s) con ACE-Step 1.5...",
+            "model_status": "generating",
+            "num_variants": num_variants,
+            "seeds": seeds,
+        }
+
+    # ============================================================
+    # === HEARTMULA DISPATCH ===
+    # ============================================================
+    if model == "heartmula":
+        heartmula_script = f"{HEARTMULA_DIR}/examples/run_music_generation.py"
+        heartmula_ckpt = f"{HEARTMULA_CKPT_DIR}/HeartMuLa-oss-3B"
+        heartcodec_ckpt = f"{HEARTMULA_CKPT_DIR}/HeartCodec-oss"
+
+        if not os.path.exists(HEARTMULA_DIR) or not os.path.exists(heartmula_script):
+            return {
+                "status": "error",
+                "message": "HeartMuLa no está instalado en el servidor. Ejecuta el script de deploy primero.",
+                "model_status": "unavailable",
+            }
+
+        if not os.path.exists(heartmula_ckpt) or not os.path.exists(heartcodec_ckpt):
+            return {
+                "status": "error",
+                "message": f"Checkpoints de HeartMuLa no encontrados. Descarga los modelos primero. "
+                           f"Esperado: {heartmula_ckpt} y {heartcodec_ckpt}",
+                "model_status": "unavailable",
+            }
+
+        logger.info(f"[Generate] Job {job_id} | Model: HeartMuLa 3B | Style: '{style_prompt}' | Variants: {num_variants}")
+
+        jobs[job_id] = {
+            "status": "generating",
+            "audio_url": None,
+            "logs": [
+                f"🎯 Generando {num_variants} variante(s) con HeartMuLa 3B",
+                f"Seeds: {seeds}",
+                f"Style/Tags: {style_prompt}",
+            ],
+            "variants": [],
+            "num_variants": num_variants,
+            "completed_variants": 0,
+            "seeds": seeds,
+            "model": "heartmula",
+        }
+
+        background_tasks.add_task(
+            run_heartmula_inference,
+            job_id, clean_lyrics, style_prompt, seeds
+        )
+
+        return {
+            "status": "success",
+            "job_id": job_id,
+            "generated_lyrics": clean_lyrics,
+            "audio_url": None,
+            "message": f"🎵 Generando {num_variants} variante(s) con HeartMuLa 3B...",
             "model_status": "generating",
             "num_variants": num_variants,
             "seeds": seeds,
@@ -1914,6 +1982,216 @@ else:
         jobs[job_id].update({"status": "error", "error": str(e)})
 
 
+# ============================================================
+# HeartMuLa 3B — Inference via subprocess
+# ============================================================
+def run_heartmula_inference(job_id: str, lyrics: str, style_prompt: str, seeds: list):
+    """
+    Run HeartMuLa 3B inference via subprocess.
+    Generates multiple variants with different seeds, applies mastering to each.
+    
+    HeartMuLa uses:
+    - lyrics file: structured with [Verse], [Chorus], etc.
+    - tags file: genre, mood, instrument, bpm descriptors
+    - HeartCodec: 12.5Hz codec for high-fidelity audio decoding
+    """
+    try:
+        import time as _time
+
+        tmp_dir = f"/app/tmp/{job_id}"
+        os.makedirs(tmp_dir, exist_ok=True)
+
+        num_variants = len(seeds)
+        variant_results = []
+
+        # Convert style_prompt to HeartMuLa tags format
+        # HeartMuLa expects tags like: "genre: pop, mood: happy, instrument: piano, guitar"
+        tags_content = _style_to_heartmula_tags(style_prompt)
+
+        for variant_idx, seed in enumerate(seeds):
+            variant_label = f"V{variant_idx + 1}/{num_variants}"
+            jobs[job_id]["logs"].append(f"🎵 HeartMuLa: Iniciando variante {variant_label} (seed={seed})...")
+
+            variant_output = f"{OUTPUT_DIR}/{job_id}/v{variant_idx + 1}"
+            os.makedirs(variant_output, exist_ok=True)
+            output_mp3 = f"{variant_output}/raw.mp3"
+
+            # Write lyrics and tags files
+            lyrics_file = f"{tmp_dir}/heartmula_lyrics_v{variant_idx}.txt"
+            tags_file = f"{tmp_dir}/heartmula_tags_v{variant_idx}.txt"
+
+            with open(lyrics_file, 'w', encoding='utf-8') as f:
+                f.write(lyrics)
+            with open(tags_file, 'w', encoding='utf-8') as f:
+                f.write(tags_content)
+
+            # Build HeartMuLa inference command
+            script_path = f"{HEARTMULA_DIR}/examples/run_music_generation.py"
+            max_audio_ms = 240000  # 4 minutes max
+
+            cmd = [
+                "python3", script_path,
+                "--model_path", HEARTMULA_CKPT_DIR,
+                "--version", "3B",
+                "--lyrics", lyrics_file,
+                "--tags", tags_file,
+                "--save_path", output_mp3,
+                "--max_audio_length_ms", str(max_audio_ms),
+                "--topk", "50",
+                "--temperature", "1.0",
+                "--cfg_scale", "1.5",
+                "--lazy_load", "true",
+            ]
+
+            env = os.environ.copy()
+            env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+            env["PYTHONUNBUFFERED"] = "1"
+
+            logger.info(f"[HeartMuLa] 🚀 Variant {variant_label} | Seed: {seed} | Tags: {tags_content[:80]}")
+
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                cwd=HEARTMULA_DIR,
+                env=env,
+                bufsize=1,
+            )
+
+            jobs[job_id]["subprocess_pid"] = process.pid
+            heartmula_timeout = 600  # 10 minutes max per variant
+            start_time = _time.time()
+
+            for line in process.stdout:
+                clean_line = line.strip()
+                if clean_line:
+                    prefix = f"[HM-{variant_label}]"
+                    jobs[job_id]["logs"].append(f"{prefix} {clean_line}")
+                    jobs[job_id]["last_log_time"] = _time.time()
+
+                # Check timeout
+                elapsed = _time.time() - start_time
+                if elapsed > heartmula_timeout:
+                    jobs[job_id]["logs"].append(
+                        f"[HM-{variant_label}] TIMEOUT after {heartmula_timeout}s, killing process..."
+                    )
+                    process.kill()
+                    break
+
+            process.wait()
+
+            if process.returncode == 0 and os.path.exists(output_mp3):
+                # Apply mastering pipeline
+                jobs[job_id]["logs"].append(f"🎚️ Masterizando variante {variant_label}...")
+                final_path = _finalize_audio(output_mp3, job_id, variant_idx)
+
+                if variant_idx == 0:
+                    audio_url = f"/outputs/{job_id}.mp3"
+                else:
+                    audio_url = f"/outputs/{job_id}_v{variant_idx + 1}.mp3"
+
+                from audio_master import get_audio_metrics
+                metrics = get_audio_metrics(final_path)
+
+                variant_results.append({
+                    "index": variant_idx,
+                    "seed": seed,
+                    "audio_url": audio_url,
+                    "duration": metrics.get("duration_seconds", 0),
+                    "file_size": metrics.get("file_size_bytes", 0),
+                    "lufs": metrics.get("lufs", 0),
+                })
+
+                jobs[job_id]["logs"].append(
+                    f"✅ HeartMuLa variante {variant_label} lista: {metrics.get('duration_seconds', 0):.1f}s, "
+                    f"LUFS: {metrics.get('lufs', 0):.1f}"
+                )
+            else:
+                jobs[job_id]["logs"].append(f"❌ HeartMuLa variante {variant_label} falló (code {process.returncode})")
+                variant_results.append({
+                    "index": variant_idx,
+                    "seed": seed,
+                    "audio_url": None,
+                    "error": f"Process failed with code {process.returncode}",
+                })
+
+            # Clean up temp files
+            for f in [lyrics_file, tags_file]:
+                try:
+                    os.remove(f)
+                except Exception:
+                    pass
+
+            jobs[job_id]["completed_variants"] = variant_idx + 1
+
+        # All variants complete - select the best
+        jobs[job_id]["variants"] = variant_results
+        successful = [v for v in variant_results if v.get("audio_url")]
+
+        if successful:
+            best = max(
+                successful,
+                key=lambda v: (
+                    v.get("duration", 0),
+                    -abs(v.get("lufs", 0) - (-14)),
+                )
+            )
+
+            # Copy best variant as primary if not v1
+            if best["index"] != 0 and best.get("audio_url"):
+                import shutil
+                best_source = f"{OUTPUT_DIR}/{job_id}_v{best['index'] + 1}.mp3"
+                best_dest = f"{OUTPUT_DIR}/{job_id}.mp3"
+                if os.path.exists(best_source):
+                    shutil.copy2(best_source, best_dest)
+
+            primary_url = f"/outputs/{job_id}.mp3"
+            jobs[job_id].update({
+                "status": "done",
+                "audio_url": primary_url,
+                "best_variant": best["index"],
+            })
+            jobs[job_id]["logs"].append(
+                f"🏆 Mejor variante HeartMuLa: V{best['index'] + 1} "
+                f"(duración: {best.get('duration', 0):.1f}s, LUFS: {best.get('lufs', 0):.1f})"
+            )
+            jobs[job_id]["logs"].append("✅ Generación HeartMuLa completada.")
+        else:
+            jobs[job_id].update({
+                "status": "error",
+                "error": "Todas las variantes HeartMuLa fallaron.",
+                "error_detail": "\n".join(v.get("error", "Unknown") for v in variant_results),
+            })
+
+    except Exception as e:
+        logger.error(f"[HeartMuLa] ❌ Error crítico: {e}", exc_info=True)
+        jobs[job_id].update({"status": "error", "error": str(e)})
+
+
+def _style_to_heartmula_tags(style_prompt: str) -> str:
+    """
+    Convierte un style_prompt de DocuMusic al formato de tags de HeartMuLa.
+    
+    HeartMuLa espera tags como: "genre: pop, mood: happy, instrument: piano, guitar, bpm: 120"
+    Si el prompt ya tiene este formato, lo deja pasar.
+    Si es un prompt libre, lo convierte inteligentemente.
+    """
+    # Si ya parece tener formato de tags, usarlo directamente
+    if any(kw in style_prompt.lower() for kw in ['genre:', 'mood:', 'bpm:', 'instrument:']):
+        return style_prompt
+    
+    # Si no, convertir el prompt libre a tags
+    # El prompt ya viene enriquecido por prompt_enricher, así que lo usamos como genre tags
+    tags = style_prompt.strip()
+    
+    # Asegurar que tenga al menos genre
+    if not tags.lower().startswith('genre'):
+        tags = f"genre: {tags}"
+    
+    return tags
+
+
 @app.get("/api/job/{job_id}")
 def get_job(job_id: str):
     job = jobs.get(job_id, {"status": "not_found"})
@@ -2072,6 +2350,11 @@ def diagnostics():
         "acestep_dir": {"path": ACESTEP_DIR, "exists": os.path.exists(ACESTEP_DIR)},
         "acestep_repo": {"path": f"{ACESTEP_DIR}/acestep", "exists": os.path.exists(f"{ACESTEP_DIR}/acestep")},
         "acestep_model": {"path": ACESTEP_MODEL_DIR, "exists": os.path.exists(ACESTEP_MODEL_DIR)},
+        # HeartMuLa checks
+        "heartmula_dir": {"path": HEARTMULA_DIR, "exists": os.path.exists(HEARTMULA_DIR)},
+        "heartmula_script": {"path": f"{HEARTMULA_DIR}/examples/run_music_generation.py", "exists": os.path.exists(f"{HEARTMULA_DIR}/examples/run_music_generation.py")},
+        "heartmula_ckpt": {"path": f"{HEARTMULA_CKPT_DIR}/HeartMuLa-oss-3B", "exists": os.path.exists(f"{HEARTMULA_CKPT_DIR}/HeartMuLa-oss-3B")},
+        "heartcodec_ckpt": {"path": f"{HEARTMULA_CKPT_DIR}/HeartCodec-oss", "exists": os.path.exists(f"{HEARTMULA_CKPT_DIR}/HeartCodec-oss")},
     }
 
     # Check if acestep is importable
@@ -2080,6 +2363,13 @@ def diagnostics():
         checks["acestep_importable"] = True
     except ImportError:
         checks["acestep_importable"] = False
+
+    # Check if heartlib is importable
+    try:
+        import heartlib
+        checks["heartlib_importable"] = True
+    except ImportError:
+        checks["heartlib_importable"] = False
 
     if os.path.exists(MODELS_DIR):
         checks["model_dir_contents"] = os.listdir(MODELS_DIR)
@@ -2090,6 +2380,9 @@ def diagnostics():
 
     if os.path.exists(ACESTEP_DIR):
         checks["acestep_dir_contents"] = os.listdir(ACESTEP_DIR)[:20]
+
+    if os.path.exists(HEARTMULA_DIR):
+        checks["heartmula_dir_contents"] = os.listdir(HEARTMULA_DIR)[:20]
 
     all_ok = all(
         v.get("exists", v) if isinstance(v, dict) else v
@@ -2105,6 +2398,9 @@ def diagnostics():
         "models_available": {
             "yue": os.path.exists(f"{MODELS_DIR}/YuE-s1") and find_yue_script() is not None,
             "ace_step": os.path.exists(f"{ACESTEP_DIR}/acestep"),
+            "heartmula": os.path.exists(f"{HEARTMULA_DIR}/examples/run_music_generation.py")
+                         and os.path.exists(f"{HEARTMULA_CKPT_DIR}/HeartMuLa-oss-3B")
+                         and os.path.exists(f"{HEARTMULA_CKPT_DIR}/HeartCodec-oss"),
         },
     }
 

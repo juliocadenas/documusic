@@ -49,6 +49,20 @@ RUN ls -la /opt/YuE/inference/xcodec_mini_infer/ && \
 # Instalar dependencias adicionales de YuE
 RUN cd /opt/YuE && pip3 install -r requirements.txt || true
 
+# ============================================================
+# HeartMuLa — The Most Powerful Open-Source Music Generation Model
+# ============================================================
+RUN git clone https://github.com/HeartMuLa/heartlib.git /opt/heartlib && \
+    cd /opt/heartlib && pip3 install -e .
+
+# Download HeartMuLa checkpoints (HeartMuLaGen + HeartMuLa-oss-3B + HeartCodec-oss)
+RUN mkdir -p /app/models/HeartMuLa && \
+    cd /app/models/HeartMuLa && \
+    pip3 install huggingface_hub && \
+    hf download --local-dir '.' 'HeartMuLa/HeartMuLaGen' && \
+    hf download --local-dir './HeartMuLa-oss-3B' 'HeartMuLa/HeartMuLa-oss-3B-happy-new-year' && \
+    hf download --local-dir './HeartCodec-oss' 'HeartMuLa/HeartCodec-oss-20260123' || echo "⚠️ HeartMuLa checkpoints download failed - will retry at runtime"
+
 # API Framework
 RUN pip3 install fastapi uvicorn httpx python-multipart
 

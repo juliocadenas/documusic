@@ -20,6 +20,8 @@ services:
       - /home/pepe/AI_MODELS/huggingface:/app/models
       # ACE-Step repo + checkpoints (persistente en host)
       - /home/pepe/AI_MODELS/ace-step:/opt/ACE-Step
+      # HeartMuLa repo (persistente en host)
+      - /home/pepe/AI_MODELS/heartlib:/opt/heartlib
       # Outputs persistentes
       - ./outputs:/app/outputs
     environment:

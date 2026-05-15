@@ -2,7 +2,13 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import './App.css';
 
-const LoadingOverlay = ({ status, logs, numVariants, completedVariants, startTime, serverAlive, gpuStats, subprocessAlive, secondsSinceActivity, previewUrl, totalSegments, completedSegments, reconnecting }) => {
+const MODEL_LABELS = {
+  'yue': 'YuE 7B',
+  'ace-step': 'ACE-Step 1.5',
+  'heartmula': 'HeartMuLa 3B',
+};
+
+const LoadingOverlay = ({ status, logs, numVariants, completedVariants, startTime, serverAlive, gpuStats, subprocessAlive, secondsSinceActivity, previewUrl, totalSegments, completedSegments, reconnecting, currentModel }) => {
   const consoleRef = React.useRef(null);
   const [elapsed, setElapsed] = React.useState(0);
 
@@ -56,7 +62,7 @@ const LoadingOverlay = ({ status, logs, numVariants, completedVariants, startTim
       <div className="loading-content">
         <div className="waveform">{[...Array(8)].map((_, i) => <span key={i} />)}</div>
         <div className="loading-overlay-title">
-          {status === 'generating' ? `🎤 Generando en Madrid (YuE 7B)...` : '⚡ Conectando con RTX 5080...'}
+          {status === 'generating' ? `🎤 Generando en Madrid (${MODEL_LABELS[currentModel] || currentModel})...` : '⚡ Conectando con RTX 5080...'}
         </div>
         <div className="loading-overlay-sub">
           {status === 'generating'
@@ -205,7 +211,8 @@ const Toast = ({ msg, type }) => <div className={`toast ${type}`}>{msg}</div>;
 
 const MODELS = [
   { id: 'yue', name: 'YuE 7B', badge: 'Letra + Voz', desc: 'Voces cantadas desde tu letra. Modelo principal de DocuMusic. Mayor control sobre la letra.', className: 'yue' },
-  { id: 'ace-step', name: 'ACE-Step 1.5', badge: 'Nuevo', desc: 'Modelo alternativo 3.5B. Mejor calidad de audio, voces e instrumentación. Más rápido.', className: 'ace' },
+  { id: 'ace-step', name: 'ACE-Step 1.5', badge: 'Alt', desc: 'Modelo alternativo 3.5B. Mejor calidad de audio, voces e instrumentación. Más rápido.', className: 'ace' },
+  { id: 'heartmula', name: 'HeartMuLa 3B', badge: '⭐ Recomendado', desc: 'El mejor modelo open-source 2026. Multilingual, alta adherencia a letras, calidad comparable a Suno. Tags de estilo.', className: 'heartmula' },
 ];
 
 const VariantCard = ({ variant, isSelected, onSelect, jobPrefix }) => {
@@ -544,7 +551,7 @@ export default function App() {
 
   return (
     <div className="app">
-      {loading && <LoadingOverlay status={genStatus} logs={logs} numVariants={numVariants} completedVariants={completedVariants} startTime={startTime} serverAlive={serverAlive} gpuStats={gpuStats} subprocessAlive={subprocessAlive} secondsSinceActivity={secondsSinceActivity} previewUrl={previewUrl} totalSegments={totalSegments} completedSegments={completedSegments} reconnecting={reconnecting} />}
+      {loading && <LoadingOverlay status={genStatus} logs={logs} numVariants={numVariants} completedVariants={completedVariants} startTime={startTime} serverAlive={serverAlive} gpuStats={gpuStats} subprocessAlive={subprocessAlive} secondsSinceActivity={secondsSinceActivity} previewUrl={previewUrl} totalSegments={totalSegments} completedSegments={completedSegments} reconnecting={reconnecting} currentModel={model} />}
       {toast && <Toast msg={toast.msg} type={toast.type} />}
 
       {/* ---- HEADER ---- */}
@@ -757,7 +764,7 @@ export default function App() {
             <div className="result-header">
               <div className="result-title">🎵 Resultado</div>
               <span className="result-meta">
-                RTX 5080 · {model === 'yue' ? 'YuE 7B' : 'ACE-Step 1.5'} · 
+                RTX 5080 · {MODEL_LABELS[model] || model} ·
                 {variants.length > 0 ? ` ${variants.length} variante(s)` : ' Masterizado'}
               </span>
             </div>
@@ -794,7 +801,7 @@ export default function App() {
                       </div>
                     ))
                   ) : (
-                    <div className="console-line waiting">Iniciando motor YuE 7B...</div>
+                    <div className="console-line waiting">Iniciando motor {MODEL_LABELS[model] || model}...</div>
                   )}
                 </div>
               </div>
@@ -836,7 +843,7 @@ export default function App() {
                     <div key={h.job_id || i} className="history-item">
                       <div className="history-info">
                         <div className="history-title">
-                          <span className="history-model">{h.model === 'yue' ? '🎵 YuE' : h.model === 'acestep' ? '🎹 ACE-Step' : '🎵'}</span>
+                          <span className="history-model">{h.model === 'yue' ? '🎵 YuE' : h.model === 'ace-step' ? '🎹 ACE-Step' : h.model === 'heartmula' ? '❤️ HeartMuLa' : '🎵'}</span>
                           {h.style && <span className="history-style"> · {h.style.substring(0, 50)}{h.style.length > 50 ? '...' : ''}</span>}
                         </div>
                         <div className="history-meta">

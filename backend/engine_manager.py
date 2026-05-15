@@ -8,6 +8,7 @@ from typing import Optional
 from engines.base_engine import BaseEngine
 from engines.yue_engine import YuEEngine
 from engines.ace_step_engine import AceStepEngine
+from engines.heartmula_engine import HeartMuLaEngine
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +16,7 @@ logger = logging.getLogger(__name__)
 AVAILABLE_ENGINES: dict[str, type[BaseEngine]] = {
     "yue":      YuEEngine,
     "ace-step": AceStepEngine,
+    "heartmula": HeartMuLaEngine,
 }
 
 
