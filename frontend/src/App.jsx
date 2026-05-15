@@ -193,7 +193,7 @@ const VariantCard = ({ variant, isSelected, onSelect, jobPrefix }) => {
 
 export default function App() {
   const [model, setModel] = useState('yue');
-  const [quantization, setQuantization] = useState('8bit');
+  const [quantization, setQuantization] = useState('16bit');
   const [serverStatus, setServerStatus] = useState(null);
   const [lyrics, setLyrics] = useState('');
   const [stylePrompt, setStylePrompt] = useState('');
@@ -470,12 +470,12 @@ export default function App() {
               </button>
             </div>
             <span className="quantization-info">
-              {quantization === '8bit' ? '✅ ~7GB VRAM (recomendado)' : '⚠️ ~14GB VRAM (puede crash)'}
+              {quantization === '8bit' ? '⚡ ~7GB VRAM (menos calidad vocal)' : '✅ ~14GB VRAM (mejor calidad vocal)'}
             </span>
           </div>
-          {quantization === '16bit' && (
+          {quantization === '8bit' && (
             <div className="quantization-warning">
-              ⚠️ 16-bit usa más VRAM, puede causar crash en GPU
+              ⚠️ 8-bit degrada la calidad vocal significativamente
             </div>
           )}
         </div>
