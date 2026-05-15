@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import './App.css';
 
-const LoadingOverlay = ({ status, logs, numVariants, completedVariants, startTime, serverAlive, gpuStats, subprocessAlive, secondsSinceActivity }) => {
+const LoadingOverlay = ({ status, logs, numVariants, completedVariants, startTime, serverAlive, gpuStats, subprocessAlive, secondsSinceActivity, previewUrl, totalSegments, completedSegments }) => {
   const consoleRef = React.useRef(null);
   const [elapsed, setElapsed] = React.useState(0);
 
@@ -60,9 +60,46 @@ const LoadingOverlay = ({ status, logs, numVariants, completedVariants, startTim
         </div>
         <div className="loading-overlay-sub">
           {status === 'generating'
-            ? `${numVariants} variante(s) · ${completedVariants}/${numVariants} completada(s) · Esto suele tardar 5-10 minutos`
+            ? totalSegments > 1
+              ? `Segmento ${completedSegments}/${totalSegments} · ${numVariants} variante(s) · Esto puede tardar hasta 2 horas para canciones largas`
+              : `${numVariants} variante(s) · ${completedVariants}/${numVariants} completada(s) · Esto suele tardar 5-10 minutos`
             : 'Preparando entorno de ejecución...'}
         </div>
+
+        {/* === PROGRESSIVE PREVIEW PLAYER === */}
+        {previewUrl && status === 'generating' && (
+          <div style={{
+            background: 'rgba(34,197,94,0.1)', borderRadius: 12, padding: '12px 20px',
+            margin: '10px auto', maxWidth: '90%', border: '1px solid rgba(34,197,94,0.3)',
+          }}>
+            <div style={{ fontSize: '13px', color: '#4ade80', marginBottom: 8, textAlign: 'center' }}>
+              🎧 Preview en vivo ({completedSegments}/{totalSegments} segmentos)
+            </div>
+            <audio
+              controls
+              src={previewUrl.startsWith('http') ? previewUrl : `/api${previewUrl}`}
+              style={{ width: '100%', height: 36 }}
+              autoPlay
+            />
+          </div>
+        )}
+
+        {/* === SEGMENT PROGRESS BAR === */}
+        {totalSegments > 1 && status === 'generating' && (
+          <div style={{ width: '80%', margin: '6px auto' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: '#a5b4fc', marginBottom: 4 }}>
+              <span>Segmentos</span>
+              <span>{completedSegments}/{totalSegments}</span>
+            </div>
+            <div style={{ background: 'rgba(255,255,255,0.1)', borderRadius: 8, height: 8, overflow: 'hidden' }}>
+              <div style={{
+                width: `${totalSegments > 0 ? (completedSegments / totalSegments) * 100 : 0}%`,
+                height: '100%', background: 'linear-gradient(90deg, #22c55e, #4ade80)',
+                borderRadius: 8, transition: 'width 0.5s ease'
+              }} />
+            </div>
+          </div>
+        )}
         
         {/* Timer + Server + Process Status */}
         <div style={{ display: 'flex', justifyContent: 'center', gap: '16px', margin: '8px 0', fontSize: '13px', color: '#a5b4fc', flexWrap: 'wrap' }}>
@@ -220,6 +257,9 @@ export default function App() {
   const [secondsSinceActivity, setSecondsSinceActivity] = useState(undefined);
   const [history, setHistory] = useState([]);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [previewUrl, setPreviewUrl] = useState(null);
+  const [totalSegments, setTotalSegments] = useState(0);
+  const [completedSegments, setCompletedSegments] = useState(0);
 
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type });
@@ -337,6 +377,9 @@ export default function App() {
         if (res.data.gpu_stats) setGpuStats(res.data.gpu_stats);
         if (res.data.subprocess_alive !== undefined) setSubprocessAlive(res.data.subprocess_alive);
         if (res.data.seconds_since_activity !== undefined) setSecondsSinceActivity(res.data.seconds_since_activity);
+        if (res.data.preview_url) setPreviewUrl(res.data.preview_url);
+        if (res.data.total_segments) setTotalSegments(res.data.total_segments);
+        if (res.data.completed_segments !== undefined) setCompletedSegments(res.data.completed_segments);
         
         if (res.data.status === 'done') {
           clearInterval(iv);
@@ -391,6 +434,9 @@ export default function App() {
     setErrorDetail(null);
     setVariants([]);
     setCompletedVariants(0);
+    setPreviewUrl(null);
+    setTotalSegments(0);
+    setCompletedSegments(0);
     setGenStatus('processing');
     showToast('⚡ Enviando a Madrid...');
     try {
@@ -434,7 +480,7 @@ export default function App() {
 
   return (
     <div className="app">
-      {loading && <LoadingOverlay status={genStatus} logs={logs} numVariants={numVariants} completedVariants={completedVariants} startTime={startTime} serverAlive={serverAlive} gpuStats={gpuStats} subprocessAlive={subprocessAlive} secondsSinceActivity={secondsSinceActivity} />}
+      {loading && <LoadingOverlay status={genStatus} logs={logs} numVariants={numVariants} completedVariants={completedVariants} startTime={startTime} serverAlive={serverAlive} gpuStats={gpuStats} subprocessAlive={subprocessAlive} secondsSinceActivity={secondsSinceActivity} previewUrl={previewUrl} totalSegments={totalSegments} completedSegments={completedSegments} />}
       {toast && <Toast msg={toast.msg} type={toast.type} />}
 
       {/* ---- HEADER ---- */}

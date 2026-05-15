@@ -495,11 +495,25 @@ VALID_SECTION_TAGS = {'verse', 'chorus', 'bridge', 'intro', 'outro'}
 # FASE 0.1: Parámetros de inferencia optimizados
 # ============================================================
 YUE_PARAMS = {
-    "max_new_tokens": 1000,       # 1500 OOM en softmax con 16-bit. 1000 = seguro para 16GB VRAM
-    "run_n_segments": 3,          # 3 segmentos = verse+chorus+verse = ~45s total (dinámico)
+    "max_new_tokens": 1500,       # 8-bit: 1500 seguro. 16-bit: OOM si >1000
+    "run_n_segments": 4,          # 8-bit: 4 segmentos = ~60s. 16-bit: override a 2
     "repetition_penalty": 1.2,    # Aumentado de 1.1 → 1.2 para más variedad
     "stage2_batch_size": 1,       # Reducido de 4 → 1 (crítico para VRAM)
     "rescale": True,              # Evitar clipping en la salida
+}
+
+# Parámetros adaptativos según cuantización
+YUE_PARAMS_BY_QUANT = {
+    "8bit": {
+        "max_new_tokens": 1500,
+        "run_n_segments": 4,      # 4 segmentos × ~15s = ~60s
+        "max_sections": 6,        # Permitir más secciones con 8-bit
+    },
+    "16bit": {
+        "max_new_tokens": 1000,
+        "run_n_segments": 2,      # 2 segmentos × ~15s = ~30s (límite VRAM)
+        "max_sections": 4,        # Menos secciones para evitar OOM
+    },
 }
 
 # FASE 0.3: Configuración de multi-variante
@@ -893,28 +907,32 @@ async def generate(req: dict, background_tasks: BackgroundTasks):
     if lyrics_translated:
         logger.info(f"[Generate] ⚠️ Lyrics traducidas español→inglés para modelo English-only")
 
-    # TRUNCAR lyrics a máximo 4 secciones para evitar OOM en 16GB VRAM
-    # (input sequence largo → softmax alloc > 1 GiB → OOM)
+    # === Parámetros adaptativos según cuantización ===
+    quant_params = YUE_PARAMS_BY_QUANT.get(quantization, YUE_PARAMS_BY_QUANT["16bit"])
+    max_sections = quant_params["max_sections"]
+    adaptive_run_n_segments = quant_params["run_n_segments"]
+    adaptive_max_tokens = quant_params["max_new_tokens"]
+
+    # TRUNCAR lyrics al máximo de secciones permitido por la cuantización
     import re as _re
-    MAX_SECTIONS = 4
     sections = _re.split(r'(\[(?:verse|chorus|bridge|intro|outro)\])', clean_lyrics, flags=_re.IGNORECASE)
-    # sections = ['', '[verse]', '\nlines\n', '[chorus]', '\nlines\n', ...]
     reconstructed = []
     section_count = 0
     for part in sections:
         if _re.match(r'\[(?:verse|chorus|bridge|intro|outro)\]$', part, _re.IGNORECASE):
             section_count += 1
-            if section_count > MAX_SECTIONS:
+            if section_count > max_sections:
                 break
         reconstructed.append(part)
     truncated_lyrics = ''.join(reconstructed).strip()
     if len(truncated_lyrics) < len(clean_lyrics):
-        logger.info(f"[Generate] ✂️ Lyrics truncadas: {len(clean_lyrics)} → {len(truncated_lyrics)} chars ({section_count} secciones)")
+        logger.info(f"[Generate] ✂️ Lyrics truncadas: {len(clean_lyrics)} → {len(truncated_lyrics)} chars ({section_count} secciones, max={max_sections} para {quantization})")
     clean_lyrics = truncated_lyrics
 
-    # run_n_segments FIJO en 2 (probado que funciona sin OOM en 16-bit)
-    dynamic_segments = 2  # Fixed: 2 segments = ~30s, safe for 16-bit on 16GB VRAM
-    logger.info(f"[Generate] Secciones: {min(section_count, MAX_SECTIONS)} → run_n_segments={dynamic_segments} (fixed for VRAM safety)")
+    # run_n_segments adaptativo: usar el menor entre el config y las secciones disponibles
+    actual_sections = min(section_count, max_sections)
+    dynamic_segments = min(adaptive_run_n_segments, max(actual_sections, 2))
+    logger.info(f"[Generate] {quantization}: secciones={actual_sections}, run_n_segments={dynamic_segments}, max_new_tokens={adaptive_max_tokens}")
 
     # Generate seeds
     seeds = []
@@ -1012,7 +1030,8 @@ async def generate(req: dict, background_tasks: BackgroundTasks):
     background_tasks.add_task(
         run_yue_inference_multi,
         job_id, clean_lyrics, style_prompt, yue_script, seeds, quantization,
-        run_n_segments=dynamic_segments
+        run_n_segments=dynamic_segments,
+        max_new_tokens=adaptive_max_tokens,
     )
 
     return {
@@ -1027,7 +1046,7 @@ async def generate(req: dict, background_tasks: BackgroundTasks):
     }
 
 
-def _build_inference_cmd(tmp_dir: str, output_path: str, yue_script: str, seed: int, run_n_segments: int = None) -> list:
+def _build_inference_cmd(tmp_dir: str, output_path: str, yue_script: str, seed: int, run_n_segments: int = None, max_new_tokens: int = None) -> list:
     """Build the YuE inference command with optimized parameters (Fase 0.1)."""
     yue_inference_dir = os.path.dirname(yue_script) if "inference" in yue_script else "/opt/YuE/inference"
 
@@ -1036,6 +1055,7 @@ def _build_inference_cmd(tmp_dir: str, output_path: str, yue_script: str, seed: 
     cwd = yue_inference_dir
 
     n_segs = run_n_segments if run_n_segments else YUE_PARAMS["run_n_segments"]
+    n_tokens = max_new_tokens if max_new_tokens else YUE_PARAMS["max_new_tokens"]
 
     cmd = [
         "python3", "infer.py",
@@ -1045,8 +1065,8 @@ def _build_inference_cmd(tmp_dir: str, output_path: str, yue_script: str, seed: 
         "--lyrics_txt", f"{tmp_dir}/lyrics.txt",
         "--output_dir", output_path,
         "--cuda_idx", "0",
-        # FASE 0.1: Parámetros optimizados
-        "--max_new_tokens", str(YUE_PARAMS["max_new_tokens"]),
+        # Parámetros adaptativos según cuantización
+        "--max_new_tokens", str(n_tokens),
         "--run_n_segments", str(n_segs),
         "--repetition_penalty", str(YUE_PARAMS["repetition_penalty"]),
         "--stage2_batch_size", str(YUE_PARAMS["stage2_batch_size"]),
@@ -1236,165 +1256,397 @@ def _finalize_audio(source_path: str, job_id: str, variant_idx: int) -> str:
         return final_mastered
 
 
-def run_yue_inference_multi(job_id: str, lyrics: str, style_prompt: str, yue_script: str, seeds: list, quantization: str = "8bit", run_n_segments: int = None):
+# ============================================================
+# MULTI-PASS: Split lyrics, progressive preview, checkpoint/resume
+# ============================================================
+
+def _split_lyrics_into_chunks(lyrics: str, sections_per_chunk: int = 2) -> list:
+    """Split lyrics into chunks of N sections each for multi-pass generation.
+    
+    Each chunk gets its own inference pass, allowing:
+    - Progressive preview (listen as segments complete)
+    - Checkpoint/resume (recover from failures)
+    - Longer songs without OOM
     """
-    FASE 0.3: Multi-variant generation.
-    Generates multiple variants with different seeds, applies mastering to each.
+    import re as _re
+    # Split by section tags, keeping the tags
+    parts = _re.split(r'(\[(?:verse|chorus|bridge|intro|outro)\])', lyrics, flags=_re.IGNORECASE)
+    chunks = []
+    current_parts = []
+    section_count = 0
+    
+    for part in parts:
+        if _re.match(r'\[(?:verse|chorus|bridge|intro|outro)\]$', part, _re.IGNORECASE):
+            if section_count >= sections_per_chunk and current_parts:
+                chunk_text = ''.join(current_parts).strip()
+                if chunk_text:
+                    chunks.append(chunk_text)
+                current_parts = []
+                section_count = 0
+            section_count += 1
+        current_parts.append(part)
+    
+    # Last chunk
+    if current_parts:
+        chunk_text = ''.join(current_parts).strip()
+        if chunk_text:
+            chunks.append(chunk_text)
+    
+    return chunks if chunks else [lyrics]
+
+
+def _concatenate_audio_files(files: list, output_path: str) -> str:
+    """Concatenate audio files using ffmpeg concat demuxer."""
+    if not files:
+        raise ValueError("No audio files to concatenate")
+    if len(files) == 1:
+        import shutil
+        shutil.copy2(files[0], output_path)
+        return output_path
+    
+    # Create concat list file
+    list_path = output_path + '.list.txt'
+    try:
+        with open(list_path, 'w') as f:
+            for fp in files:
+                f.write(f"file '{fp}'\n")
+        
+        subprocess.run(
+            ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_path,
+             "-ar", "44100", "-b:a", "192k", "-c:a", "libmp3lame", output_path],
+            check=True, capture_output=True, timeout=60
+        )
+    finally:
+        try:
+            os.remove(list_path)
+        except Exception:
+            pass
+    
+    return output_path
+
+
+def _save_checkpoint(job_id: str, data: dict):
+    """Save checkpoint data for resume after failure."""
+    checkpoint_dir = f"/app/tmp/{job_id}"
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    checkpoint_path = f"{checkpoint_dir}/checkpoint.json"
+    with open(checkpoint_path, 'w') as f:
+        json.dump(data, f, indent=2)
+    logger.info(f"[Checkpoint] Saved for job {job_id}: {data.get('completed_segments', [])}")
+
+
+def _load_checkpoint(job_id: str) -> dict | None:
+    """Load checkpoint data for resume."""
+    checkpoint_path = f"/app/tmp/{job_id}/checkpoint.json"
+    if os.path.exists(checkpoint_path):
+        try:
+            with open(checkpoint_path, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning(f"[Checkpoint] Failed to load for job {job_id}: {e}")
+    return None
+
+
+def _update_preview(job_id: str, segment_files: list, variant_idx: int):
+    """Create/update preview MP3 from completed segments."""
+    if not segment_files:
+        return None
+    
+    try:
+        preview_path = f"{OUTPUT_DIR}/{job_id}_preview.mp3"
+        if variant_idx > 0:
+            preview_path = f"{OUTPUT_DIR}/{job_id}_v{variant_idx + 1}_preview.mp3"
+        
+        _concatenate_audio_files(segment_files, preview_path)
+        
+        preview_url = f"/outputs/{os.path.basename(preview_path)}"
+        jobs[job_id]["preview_url"] = preview_url
+        logger.info(f"[Preview] Updated: {preview_url} ({len(segment_files)} segments)")
+        return preview_url
+    except Exception as e:
+        logger.warning(f"[Preview] Failed to update: {e}")
+        return None
+
+
+def run_yue_inference_multi(job_id: str, lyrics: str, style_prompt: str, yue_script: str, seeds: list, quantization: str = "8bit", run_n_segments: int = None, max_new_tokens: int = None):
+    """
+    FASE 0.3: Multi-variant + Multi-pass generation with progressive preview.
+    
+    For each variant:
+    - Splits lyrics into chunks (sections_per_chunk = run_n_segments)
+    - Generates each chunk in a separate inference pass (multi-pass)
+    - Provides progressive preview after each chunk completes
+    - Saves checkpoints for resume after failures
+    - Concatenates all chunks and applies mastering
+    
     quantization: '8bit' or '16bit' — controls model loading behavior.
-    run_n_segments: Override for YUE_PARAMS['run_n_segments'] (dynamic based on lyrics sections).
+    run_n_segments: Override for YUE_PARAMS['run_n_segments'].
+    max_new_tokens: Override for YUE_PARAMS['max_new_tokens'].
     """
     try:
-        import threading
+        import time as _time
 
         tmp_dir = f"/app/tmp/{job_id}"
         os.makedirs(tmp_dir, exist_ok=True)
 
-        with open(f"{tmp_dir}/lyrics.txt", "w", encoding="utf-8") as f:
-            f.write(lyrics.strip())
+        # Write full style prompt
         with open(f"{tmp_dir}/style.txt", "w", encoding="utf-8") as f:
             f.write(style_prompt)
 
+        n_segs = run_n_segments if run_n_segments else YUE_PARAMS["run_n_segments"]
+        n_tokens = max_new_tokens if max_new_tokens else YUE_PARAMS["max_new_tokens"]
+
+        # === MULTI-PASS: Split lyrics into chunks ===
+        chunks = _split_lyrics_into_chunks(lyrics, sections_per_chunk=n_segs)
+        num_chunks = len(chunks)
+        is_multipass = num_chunks > 1
+
+        if is_multipass:
+            jobs[job_id]["logs"].append(
+                f"📋 Multi-pass: {num_chunks} segmentos × ~{n_segs} secciones c/u"
+            )
+            jobs[job_id]["total_segments"] = num_chunks
+            jobs[job_id]["completed_segments"] = 0
+            jobs[job_id]["segments"] = [
+                {"index": i, "status": "pending", "audio_path": None, "duration": 0}
+                for i in range(num_chunks)
+            ]
+        else:
+            jobs[job_id]["total_segments"] = 1
+            jobs[job_id]["completed_segments"] = 0
+
         num_variants = len(seeds)
         variant_results = []
+
+        # === Load checkpoint for resume ===
+        checkpoint = _load_checkpoint(job_id)
+        resume_from_segment = 0
+        resume_segment_files = []
+        if checkpoint:
+            resume_from_segment = checkpoint.get("completed_segments", 0)
+            resume_segment_files = checkpoint.get("segment_files", [])
+            jobs[job_id]["logs"].append(
+                f"🔄 Reanudando desde segmento {resume_from_segment + 1}/{num_chunks} "
+                f"({len(resume_segment_files)} archivos previos)"
+            )
 
         for variant_idx, seed in enumerate(seeds):
             variant_label = f"V{variant_idx + 1}/{num_variants}"
             jobs[job_id]["logs"].append(f"🎵 Iniciando variante {variant_label} (seed={seed})...")
 
-            # Each variant gets its own output subdirectory
             variant_output = f"{OUTPUT_DIR}/{job_id}/v{variant_idx + 1}"
             os.makedirs(variant_output, exist_ok=True)
 
-            # Build command with optimized parameters (use dynamic run_n_segments)
-            n_segs = run_n_segments if run_n_segments else YUE_PARAMS["run_n_segments"]
-            cmd, yue_inference_dir = _build_inference_cmd(tmp_dir, variant_output, yue_script, seed, n_segs)
-            env = _get_env(yue_inference_dir, quantization)
+            segment_files = list(resume_segment_files) if variant_idx == 0 else []
+            variant_error = False
 
-            logger.info(f"[YuE] 🚀 Variant {variant_label} | Seed: {seed} | CMD: {' '.join(cmd)}")
+            for chunk_idx, chunk_lyrics in enumerate(chunks):
+                # Skip already completed segments on resume
+                if chunk_idx < resume_from_segment:
+                    continue
 
-            # Run inference synchronously (one variant at a time to manage VRAM)
-            error_lines = []
-            try:
-                process = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    cwd=yue_inference_dir,
-                    env=env,
-                    bufsize=1,
-                    universal_newlines=True
+                seg_label = f"S{chunk_idx + 1}/{num_chunks}"
+                full_label = f"{variant_label} {seg_label}"
+
+                if is_multipass:
+                    jobs[job_id]["logs"].append(f"🎤 Generando segmento {seg_label}...")
+                    if "segments" in jobs[job_id]:
+                        jobs[job_id]["segments"][chunk_idx]["status"] = "generating"
+
+                # Write chunk-specific lyrics file
+                chunk_lyrics_file = f"{tmp_dir}/lyrics_chunk{chunk_idx}.txt"
+                with open(chunk_lyrics_file, "w", encoding="utf-8") as f:
+                    f.write(chunk_lyrics.strip())
+
+                # Count sections in this chunk for dynamic run_n_segments
+                import re as _re
+                chunk_sections = len(_re.findall(
+                    r'\[(?:verse|chorus|bridge|intro|outro)\]', chunk_lyrics, _re.IGNORECASE
+                ))
+                chunk_segs = max(1, min(n_segs, chunk_sections)) if chunk_sections > 0 else n_segs
+
+                # Build command for this chunk
+                cmd, yue_inference_dir = _build_inference_cmd(
+                    tmp_dir, variant_output, yue_script, seed, chunk_segs, n_tokens
                 )
+                # Replace lyrics file path to point to chunk file
+                for i, arg in enumerate(cmd):
+                    if arg == f"{tmp_dir}/lyrics.txt":
+                        cmd[i] = chunk_lyrics_file
+                        break
 
-                # Store PID for subprocess monitoring
-                import time as _time
-                jobs[job_id]["subprocess_pid"] = process.pid
+                env = _get_env(yue_inference_dir, quantization)
+                logger.info(f"[YuE] 🚀 {full_label} | Seed: {seed} | Chunk sections: {chunk_sections} | run_n_segments: {chunk_segs}")
 
-                for line in process.stdout:
-                    clean_line = line.strip()
-                    if clean_line:
-                        prefix = f"[{variant_label}]"
-                        print(f"[{job_id}] {prefix} {clean_line}")
-                        jobs[job_id]["logs"].append(f"{prefix} {clean_line}")
-                        jobs[job_id]["last_log_time"] = _time.time()
-                        if any(kw in clean_line.lower() for kw in ['error', 'traceback', 'exception', 'failed']):
-                            error_lines.append(clean_line)
+                # Run inference for this chunk
+                error_lines = []
+                try:
+                    process = subprocess.Popen(
+                        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                        text=True, cwd=yue_inference_dir, env=env,
+                        bufsize=1, universal_newlines=True
+                    )
+                    jobs[job_id]["subprocess_pid"] = process.pid
 
-                process.wait()
+                    for line in process.stdout:
+                        clean_line = line.strip()
+                        if clean_line:
+                            prefix = f"[{full_label}]"
+                            print(f"[{job_id}] {prefix} {clean_line}")
+                            jobs[job_id]["logs"].append(f"{prefix} {clean_line}")
+                            jobs[job_id]["last_log_time"] = _time.time()
+                            if any(kw in clean_line.lower() for kw in ['error', 'traceback', 'exception', 'failed']):
+                                error_lines.append(clean_line)
 
-                if process.returncode == 0:
-                    # Find the generated audio
-                    source_path = _find_audio_file(variant_output)
-                    if source_path:
-                        # FASE 0.2: Apply mastering pipeline
-                        jobs[job_id]["logs"].append(f"🎚️ Masterizando variante {variant_label}...")
-                        final_path = _finalize_audio(source_path, job_id, variant_idx)
+                    process.wait()
 
-                        # Determine the URL
-                        if variant_idx == 0:
-                            audio_url = f"/outputs/{job_id}.mp3"
+                    if process.returncode == 0:
+                        source_path = _find_audio_file(variant_output)
+                        if source_path:
+                            # Convert to MP3 for concatenation
+                            seg_mp3 = f"{variant_output}/segment_{chunk_idx}.mp3"
+                            subprocess.run(
+                                ["ffmpeg", "-y", "-i", source_path, "-ar", "44100", "-b:a", "192k", seg_mp3],
+                                check=True, capture_output=True
+                            )
+                            segment_files.append(seg_mp3)
+
+                            # Update segment status
+                            if "segments" in jobs[job_id]:
+                                from audio_master import get_audio_metrics as _get_metrics
+                                seg_metrics = _get_metrics(seg_mp3)
+                                jobs[job_id]["segments"][chunk_idx] = {
+                                    "index": chunk_idx, "status": "done",
+                                    "audio_path": seg_mp3,
+                                    "duration": seg_metrics.get("duration_seconds", 0),
+                                }
+
+                            jobs[job_id]["completed_segments"] = chunk_idx + 1
+
+                            # === PROGRESSIVE PREVIEW ===
+                            if is_multipass and segment_files:
+                                _update_preview(job_id, segment_files, variant_idx)
+                                jobs[job_id]["logs"].append(
+                                    f"🎧 Preview actualizado: {len(segment_files)}/{num_chunks} segmentos"
+                                )
+
+                            # === CHECKPOINT ===
+                            if is_multipass:
+                                _save_checkpoint(job_id, {
+                                    "job_id": job_id,
+                                    "completed_segments": chunk_idx + 1,
+                                    "total_segments": num_chunks,
+                                    "segment_files": segment_files,
+                                    "seed": seed,
+                                    "quantization": quantization,
+                                    "style_prompt": style_prompt,
+                                })
+
+                            # Clean variant output for next chunk
+                            if chunk_idx < num_chunks - 1:
+                                for f in glob.glob(f"{variant_output}/*"):
+                                    if f not in segment_files:
+                                        try: os.remove(f)
+                                        except Exception: pass
                         else:
-                            audio_url = f"/outputs/{job_id}_v{variant_idx + 1}.mp3"
-
-                        # Get metrics
-                        from audio_master import get_audio_metrics
-                        metrics = get_audio_metrics(final_path)
-
-                        variant_results.append({
-                            "index": variant_idx,
-                            "seed": seed,
-                            "audio_url": audio_url,
-                            "duration": metrics.get("duration_seconds", 0),
-                            "file_size": metrics.get("file_size_bytes", 0),
-                            "lufs": metrics.get("lufs", 0),
-                        })
-
-                        jobs[job_id]["logs"].append(
-                            f"✅ Variante {variant_label} lista: {metrics.get('duration_seconds', 0):.1f}s, "
-                            f"LUFS: {metrics.get('lufs', 0):.1f}"
-                        )
+                            jobs[job_id]["logs"].append(f"⚠️ {full_label}: No se encontró audio")
                     else:
-                        all_files = glob.glob(f"{variant_output}/**/*", recursive=True)
-                        jobs[job_id]["logs"].append(
-                            f"⚠️ Variante {variant_label}: No se encontró audio. "
-                            f"Archivos: {[os.path.basename(f) for f in all_files[:5]]}"
-                        )
-                        variant_results.append({
-                            "index": variant_idx,
-                            "seed": seed,
-                            "audio_url": None,
-                            "error": "No audio file found",
-                        })
-                else:
-                    error_detail = "\n".join(error_lines[-5:]) if error_lines else "Unknown error"
-                    jobs[job_id]["logs"].append(f"❌ Variante {variant_label} falló (code {process.returncode})")
-                    variant_results.append({
-                        "index": variant_idx,
-                        "seed": seed,
-                        "audio_url": None,
-                        "error": f"Process failed with code {process.returncode}: {error_detail}",
-                    })
+                        error_detail = "\n".join(error_lines[-5:]) if error_lines else "Unknown error"
+                        jobs[job_id]["logs"].append(f"❌ {full_label} falló (code {process.returncode})")
+                        variant_error = True
 
-            except Exception as e:
-                jobs[job_id]["logs"].append(f"❌ Variante {variant_label} excepción: {e}")
+                except Exception as e:
+                    jobs[job_id]["logs"].append(f"❌ {full_label} excepción: {e}")
+                    variant_error = True
+
+                # If chunk failed, save checkpoint and stop this variant
+                if variant_error:
+                    if is_multipass and segment_files:
+                        _save_checkpoint(job_id, {
+                            "job_id": job_id,
+                            "completed_segments": chunk_idx,
+                            "total_segments": num_chunks,
+                            "segment_files": segment_files,
+                            "seed": seed,
+                            "quantization": quantization,
+                            "style_prompt": style_prompt,
+                            "failed_at_segment": chunk_idx,
+                        })
+                        jobs[job_id]["logs"].append(
+                            f"💾 Checkpoint guardado. {len(segment_files)}/{num_chunks} segmentos. Puedes reanudar."
+                        )
+                    break
+
+            # === POST-VARIANT: Concatenate segments if multi-pass ===
+            if not variant_error and is_multipass and len(segment_files) > 1:
+                jobs[job_id]["logs"].append(f"🔗 Concatenando {len(segment_files)} segmentos...")
+                concat_path = f"{variant_output}/full_concat.mp3"
+                try:
+                    _concatenate_audio_files(segment_files, concat_path)
+                    source_path = concat_path
+                except Exception as e:
+                    jobs[job_id]["logs"].append(f"⚠️ Error concatenando: {e}")
+                    source_path = segment_files[-1] if segment_files else None
+            elif not variant_error and segment_files:
+                source_path = segment_files[0]
+            else:
+                source_path = None
+
+            if not variant_error and source_path:
+                # Apply mastering
+                jobs[job_id]["logs"].append(f"🎚️ Masterizando variante {variant_label}...")
+                final_path = _finalize_audio(source_path, job_id, variant_idx)
+
+                audio_url = f"/outputs/{job_id}.mp3" if variant_idx == 0 else f"/outputs/{job_id}_v{variant_idx + 1}.mp3"
+
+                from audio_master import get_audio_metrics
+                metrics = get_audio_metrics(final_path)
+
                 variant_results.append({
-                    "index": variant_idx,
-                    "seed": seed,
-                    "audio_url": None,
-                    "error": str(e),
+                    "index": variant_idx, "seed": seed, "audio_url": audio_url,
+                    "duration": metrics.get("duration_seconds", 0),
+                    "file_size": metrics.get("file_size_bytes", 0),
+                    "lufs": metrics.get("lufs", 0),
+                    "segments": len(segment_files),
+                })
+                jobs[job_id]["logs"].append(
+                    f"✅ Variante {variant_label} lista: {metrics.get('duration_seconds', 0):.1f}s, "
+                    f"LUFS: {metrics.get('lufs', 0):.1f}, {len(segment_files)} segmento(s)"
+                )
+            elif variant_error:
+                variant_results.append({
+                    "index": variant_idx, "seed": seed, "audio_url": None,
+                    "error": "Segment(s) failed. Checkpoint saved for resume.",
+                })
+            else:
+                variant_results.append({
+                    "index": variant_idx, "seed": seed, "audio_url": None,
+                    "error": "No audio generated",
                 })
 
             jobs[job_id]["completed_variants"] = variant_idx + 1
 
-        # All variants complete - select the best one
+        # === ALL VARIANTS COMPLETE ===
         successful_variants = [v for v in variant_results if v.get("audio_url")]
         jobs[job_id]["variants"] = variant_results
 
         if successful_variants:
-            # Select best variant: prefer longer duration, then closer to -14 LUFS
             best = max(
                 successful_variants,
-                key=lambda v: (
-                    v.get("duration", 0),
-                    -abs(v.get("lufs", 0) - (-14)),  # Closer to -14 is better
-                )
+                key=lambda v: (v.get("duration", 0), -abs(v.get("lufs", 0) - (-14)))
             )
 
-            # The primary URL is always the best variant
-            # If best is not v1, we need to copy it as the primary
             if best["index"] != 0 and best.get("audio_url"):
                 import shutil
                 best_source = f"{OUTPUT_DIR}/{job_id}_v{best['index'] + 1}.mp3"
                 best_dest = f"{OUTPUT_DIR}/{job_id}.mp3"
                 if os.path.exists(best_source):
                     shutil.copy2(best_source, best_dest)
-                    # Update variant 0 to point to the copied file
                     variant_results[0] = {
-                        "index": 0,
-                        "seed": seeds[0],
+                        "index": 0, "seed": seeds[0],
                         "audio_url": f"/outputs/{job_id}.mp3",
                         "duration": best.get("duration", 0),
-                        "file_size": best.get("file_size", 0),
+                        "file_size": best.get("file_size_bytes", 0),
                         "lufs": best.get("lufs", 0),
                         "is_best_copy": True,
                     }
@@ -1411,12 +1663,14 @@ def run_yue_inference_multi(job_id: str, lyrics: str, style_prompt: str, yue_scr
             )
             jobs[job_id]["logs"].append("✅ Todas las variantes completadas.")
         else:
+            has_checkpoint = any("Checkpoint" in (v.get("error", "")) for v in variant_results)
+            error_msg = "Todas las variantes fallaron."
+            if has_checkpoint:
+                error_msg += " Se guardaron checkpoints para reanudar."
             jobs[job_id].update({
                 "status": "error",
-                "error": "Todas las variantes fallaron.",
-                "error_detail": "\n".join(
-                    v.get("error", "Unknown") for v in variant_results
-                ),
+                "error": error_msg,
+                "error_detail": "\n".join(v.get("error", "Unknown") for v in variant_results),
             })
 
     except Exception as e:
