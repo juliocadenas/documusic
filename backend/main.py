@@ -1372,18 +1372,16 @@ def _update_preview(job_id: str, segment_files: list, variant_idx: int):
 
 def run_yue_inference_multi(job_id: str, lyrics: str, style_prompt: str, yue_script: str, seeds: list, quantization: str = "8bit", run_n_segments: int = None, max_new_tokens: int = None):
     """
-    Single-pass multi-variant generation with YuE.
+    Multi-pass generation with progressive preview, checkpoint/resume, and crossfade.
     
-    IMPORTANT: YuE generates ALL sections in a SINGLE coherent inference pass.
-    The run_n_segments parameter controls how many sections Stage2 processes at a time
-    (for memory management), NOT how many separate inference passes to make.
-    This ensures musical continuity across all sections.
-    
-    For each variant:
-    - Runs a single inference pass with ALL lyrics (maintains musical coherence)
-    - Uses run_n_segments to control Stage2 memory usage
-    - Saves checkpoint on failure for resume with same seed
-    - Applies mastering to the result
+    Strategy:
+    - Splits lyrics into chunks (sections_per_chunk = run_n_segments)
+    - Generates each chunk in a separate inference pass (multi-pass)
+    - Same seed + style for ALL chunks → similar musical "DNA"
+    - Crossfade between chunks for smoother transitions
+    - Progressive preview after each chunk completes
+    - Checkpoint after each chunk for resume on failure
+    - At the end, concatenates with crossfade and applies mastering
     """
     try:
         import time as _time
@@ -1391,147 +1389,240 @@ def run_yue_inference_multi(job_id: str, lyrics: str, style_prompt: str, yue_scr
         tmp_dir = f"/app/tmp/{job_id}"
         os.makedirs(tmp_dir, exist_ok=True)
 
-        # Write full lyrics and style to single files
+        # Write full style prompt
         with open(f"{tmp_dir}/style.txt", "w", encoding="utf-8") as f:
             f.write(style_prompt)
-        with open(f"{tmp_dir}/lyrics.txt", "w", encoding="utf-8") as f:
-            f.write(lyrics.strip())
 
         n_segs = run_n_segments if run_n_segments else YUE_PARAMS["run_n_segments"]
         n_tokens = max_new_tokens if max_new_tokens else YUE_PARAMS["max_new_tokens"]
 
-        # Count sections for logging
-        import re as _re
-        section_count = len(_re.findall(
-            r'\[(?:verse|chorus|bridge|intro|outro)\]', lyrics, _re.IGNORECASE
-        ))
+        # === MULTI-PASS: Split lyrics into chunks ===
+        chunks = _split_lyrics_into_chunks(lyrics, sections_per_chunk=n_segs)
+        num_chunks = len(chunks)
+        is_multipass = num_chunks > 1
 
-        jobs[job_id]["logs"].append(
-            f"📋 Single-pass: {section_count} secciones, run_n_segments={n_segs}, "
-            f"max_new_tokens={n_tokens}"
-        )
-        jobs[job_id]["total_segments"] = 1
-        jobs[job_id]["completed_segments"] = 0
+        if is_multipass:
+            jobs[job_id]["logs"].append(
+                f"📋 Multi-pass: {num_chunks} segmentos × ~{n_segs} secciones c/u (crossfade activado)"
+            )
+            jobs[job_id]["total_segments"] = num_chunks
+            jobs[job_id]["completed_segments"] = 0
+            jobs[job_id]["segments"] = [
+                {"index": i, "status": "pending", "audio_path": None, "duration": 0}
+                for i in range(num_chunks)
+            ]
+        else:
+            jobs[job_id]["total_segments"] = 1
+            jobs[job_id]["completed_segments"] = 0
 
         num_variants = len(seeds)
         variant_results = []
 
-        # Load checkpoint for resume
+        # === Load checkpoint for resume ===
         checkpoint = _load_checkpoint(job_id)
-        resume_from_variant = 0
+        resume_from_segment = 0
+        resume_segment_files = []
         if checkpoint:
-            resume_from_variant = checkpoint.get("completed_variants", 0)
+            resume_from_segment = checkpoint.get("completed_segments", 0)
+            resume_segment_files = checkpoint.get("segment_files", [])
             jobs[job_id]["logs"].append(
-                f"🔄 Reanudando desde variante {resume_from_variant + 1}/{num_variants}"
+                f"🔄 Reanudando desde segmento {resume_from_segment + 1}/{num_chunks} "
+                f"({len(resume_segment_files)} archivos previos)"
             )
 
         for variant_idx, seed in enumerate(seeds):
-            # Skip already completed variants on resume
-            if variant_idx < resume_from_variant:
-                continue
-
             variant_label = f"V{variant_idx + 1}/{num_variants}"
             jobs[job_id]["logs"].append(f"🎵 Iniciando variante {variant_label} (seed={seed})...")
 
             variant_output = f"{OUTPUT_DIR}/{job_id}/v{variant_idx + 1}"
             os.makedirs(variant_output, exist_ok=True)
 
-            # Build command — single pass with ALL lyrics
-            cmd, yue_inference_dir = _build_inference_cmd(
-                tmp_dir, variant_output, yue_script, seed, n_segs, n_tokens
-            )
-            env = _get_env(yue_inference_dir, quantization)
-
-            logger.info(
-                f"[YuE] 🚀 {variant_label} | Seed: {seed} | Sections: {section_count} | "
-                f"run_n_segments: {n_segs} | max_new_tokens: {n_tokens}"
-            )
-
-            # Run single-pass inference
-            error_lines = []
+            segment_files = list(resume_segment_files) if variant_idx == 0 else []
             variant_error = False
-            try:
-                process = subprocess.Popen(
-                    cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, cwd=yue_inference_dir, env=env,
-                    bufsize=1, universal_newlines=True
+
+            for chunk_idx, chunk_lyrics in enumerate(chunks):
+                # Skip already completed segments on resume
+                if chunk_idx < resume_from_segment:
+                    continue
+
+                seg_label = f"S{chunk_idx + 1}/{num_chunks}"
+                full_label = f"{variant_label} {seg_label}"
+
+                if is_multipass:
+                    jobs[job_id]["logs"].append(f"🎤 Generando segmento {seg_label}...")
+                    if "segments" in jobs[job_id]:
+                        jobs[job_id]["segments"][chunk_idx]["status"] = "generating"
+
+                # Write chunk-specific lyrics file
+                chunk_lyrics_file = f"{tmp_dir}/lyrics_chunk{chunk_idx}.txt"
+                with open(chunk_lyrics_file, "w", encoding="utf-8") as f:
+                    f.write(chunk_lyrics.strip())
+
+                # Count sections in this chunk for dynamic run_n_segments
+                import re as _re
+                chunk_sections = len(_re.findall(
+                    r'\[(?:verse|chorus|bridge|intro|outro)\]', chunk_lyrics, _re.IGNORECASE
+                ))
+                chunk_segs = max(1, min(n_segs, chunk_sections)) if chunk_sections > 0 else n_segs
+
+                # Build command for this chunk
+                cmd, yue_inference_dir = _build_inference_cmd(
+                    tmp_dir, variant_output, yue_script, seed, chunk_segs, n_tokens
                 )
-                jobs[job_id]["subprocess_pid"] = process.pid
+                # Replace lyrics file path to point to chunk file
+                for i, arg in enumerate(cmd):
+                    if arg == f"{tmp_dir}/lyrics.txt":
+                        cmd[i] = chunk_lyrics_file
+                        break
 
-                for line in process.stdout:
-                    clean_line = line.strip()
-                    if clean_line:
-                        print(f"[{job_id}] [{variant_label}] {clean_line}")
-                        jobs[job_id]["logs"].append(f"[{variant_label}] {clean_line}")
-                        jobs[job_id]["last_log_time"] = _time.time()
-                        if any(kw in clean_line.lower() for kw in ['error', 'traceback', 'exception', 'failed']):
-                            error_lines.append(clean_line)
+                env = _get_env(yue_inference_dir, quantization)
+                logger.info(f"[YuE] 🚀 {full_label} | Seed: {seed} | Chunk sections: {chunk_sections} | run_n_segments: {chunk_segs}")
 
-                process.wait()
-
-                if process.returncode == 0:
-                    source_path = _find_audio_file(variant_output)
-                    if source_path:
-                        # Apply mastering
-                        jobs[job_id]["logs"].append(f"🎚️ Masterizando variante {variant_label}...")
-                        final_path = _finalize_audio(source_path, job_id, variant_idx)
-
-                        audio_url = f"/outputs/{job_id}.mp3" if variant_idx == 0 else f"/outputs/{job_id}_v{variant_idx + 1}.mp3"
-
-                        from audio_master import get_audio_metrics
-                        metrics = get_audio_metrics(final_path)
-
-                        variant_results.append({
-                            "index": variant_idx, "seed": seed, "audio_url": audio_url,
-                            "duration": metrics.get("duration_seconds", 0),
-                            "file_size": metrics.get("file_size_bytes", 0),
-                            "lufs": metrics.get("lufs", 0),
-                        })
-                        jobs[job_id]["logs"].append(
-                            f"✅ Variante {variant_label} lista: "
-                            f"{metrics.get('duration_seconds', 0):.1f}s, "
-                            f"LUFS: {metrics.get('lufs', 0):.1f}"
-                        )
-                        jobs[job_id]["completed_segments"] = 1
-                    else:
-                        jobs[job_id]["logs"].append(f"⚠️ {variant_label}: No se encontró audio")
-                        variant_error = True
-                else:
-                    error_detail = "\n".join(error_lines[-5:]) if error_lines else "Unknown error"
-                    jobs[job_id]["logs"].append(
-                        f"❌ {variant_label} falló (code {process.returncode}): {error_detail[:200]}"
+                # Run inference for this chunk
+                error_lines = []
+                try:
+                    process = subprocess.Popen(
+                        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                        text=True, cwd=yue_inference_dir, env=env,
+                        bufsize=1, universal_newlines=True
                     )
+                    jobs[job_id]["subprocess_pid"] = process.pid
+
+                    for line in process.stdout:
+                        clean_line = line.strip()
+                        if clean_line:
+                            prefix = f"[{full_label}]"
+                            print(f"[{job_id}] {prefix} {clean_line}")
+                            jobs[job_id]["logs"].append(f"{prefix} {clean_line}")
+                            jobs[job_id]["last_log_time"] = _time.time()
+                            if any(kw in clean_line.lower() for kw in ['error', 'traceback', 'exception', 'failed']):
+                                error_lines.append(clean_line)
+
+                    process.wait()
+
+                    if process.returncode == 0:
+                        source_path = _find_audio_file(variant_output)
+                        if source_path:
+                            # Convert to MP3 for concatenation
+                            seg_mp3 = f"{variant_output}/segment_{chunk_idx}.mp3"
+                            subprocess.run(
+                                ["ffmpeg", "-y", "-i", source_path, "-ar", "44100", "-b:a", "192k", seg_mp3],
+                                check=True, capture_output=True
+                            )
+                            segment_files.append(seg_mp3)
+
+                            # Update segment status
+                            if "segments" in jobs[job_id]:
+                                from audio_master import get_audio_metrics as _get_metrics
+                                seg_metrics = _get_metrics(seg_mp3)
+                                jobs[job_id]["segments"][chunk_idx] = {
+                                    "index": chunk_idx, "status": "done",
+                                    "audio_path": seg_mp3,
+                                    "duration": seg_metrics.get("duration_seconds", 0),
+                                }
+
+                            jobs[job_id]["completed_segments"] = chunk_idx + 1
+
+                            # === PROGRESSIVE PREVIEW ===
+                            if is_multipass and segment_files:
+                                _update_preview(job_id, segment_files, variant_idx)
+                                jobs[job_id]["logs"].append(
+                                    f"🎧 Preview actualizado: {len(segment_files)}/{num_chunks} segmentos"
+                                )
+
+                            # === CHECKPOINT ===
+                            if is_multipass:
+                                _save_checkpoint(job_id, {
+                                    "job_id": job_id,
+                                    "completed_segments": chunk_idx + 1,
+                                    "total_segments": num_chunks,
+                                    "segment_files": segment_files,
+                                    "seed": seed,
+                                    "quantization": quantization,
+                                    "style_prompt": style_prompt,
+                                })
+
+                            # Clean variant output for next chunk
+                            if chunk_idx < num_chunks - 1:
+                                for f in glob.glob(f"{variant_output}/*"):
+                                    if f not in segment_files:
+                                        try: os.remove(f)
+                                        except Exception: pass
+                        else:
+                            jobs[job_id]["logs"].append(f"⚠️ {full_label}: No se encontró audio")
+                    else:
+                        error_detail = "\n".join(error_lines[-5:]) if error_lines else "Unknown error"
+                        jobs[job_id]["logs"].append(f"❌ {full_label} falló (code {process.returncode})")
+                        variant_error = True
+
+                except Exception as e:
+                    jobs[job_id]["logs"].append(f"❌ {full_label} excepción: {e}")
                     variant_error = True
 
-            except Exception as e:
-                jobs[job_id]["logs"].append(f"❌ {variant_label} excepción: {e}")
-                variant_error = True
+                # If chunk failed, save checkpoint and stop this variant
+                if variant_error:
+                    if is_multipass and segment_files:
+                        _save_checkpoint(job_id, {
+                            "job_id": job_id,
+                            "completed_segments": chunk_idx,
+                            "total_segments": num_chunks,
+                            "segment_files": segment_files,
+                            "seed": seed,
+                            "quantization": quantization,
+                            "style_prompt": style_prompt,
+                            "failed_at_segment": chunk_idx,
+                        })
+                        jobs[job_id]["logs"].append(
+                            f"💾 Checkpoint guardado. {len(segment_files)}/{num_chunks} segmentos. Puedes reanudar."
+                        )
+                    break
 
-            # Save checkpoint (on failure for resume, on success for multi-variant resume)
-            if variant_error:
-                _save_checkpoint(job_id, {
-                    "job_id": job_id,
-                    "completed_variants": variant_idx,
-                    "total_variants": num_variants,
-                    "seed": seed,
-                    "quantization": quantization,
-                    "style_prompt": style_prompt,
-                    "run_n_segments": n_segs,
-                    "max_new_tokens": n_tokens,
-                    "failed_at_variant": variant_idx,
+            # === POST-VARIANT: Concatenate segments with crossfade ===
+            if not variant_error and is_multipass and len(segment_files) > 1:
+                jobs[job_id]["logs"].append(f"🔗 Concatenando {len(segment_files)} segmentos con crossfade...")
+                concat_path = f"{variant_output}/full_concat.mp3"
+                try:
+                    # Use crossfade concatenation for smoother transitions
+                    _concatenate_audio_files(segment_files, concat_path)
+                    source_path = concat_path
+                except Exception as e:
+                    jobs[job_id]["logs"].append(f"⚠️ Error concatenando: {e}")
+                    source_path = segment_files[-1] if segment_files else None
+            elif not variant_error and segment_files:
+                source_path = segment_files[0]
+            else:
+                source_path = None
+
+            if not variant_error and source_path:
+                # Apply mastering
+                jobs[job_id]["logs"].append(f"🎚️ Masterizando variante {variant_label}...")
+                final_path = _finalize_audio(source_path, job_id, variant_idx)
+
+                audio_url = f"/outputs/{job_id}.mp3" if variant_idx == 0 else f"/outputs/{job_id}_v{variant_idx + 1}.mp3"
+
+                from audio_master import get_audio_metrics
+                metrics = get_audio_metrics(final_path)
+
+                variant_results.append({
+                    "index": variant_idx, "seed": seed, "audio_url": audio_url,
+                    "duration": metrics.get("duration_seconds", 0),
+                    "file_size": metrics.get("file_size_bytes", 0),
+                    "lufs": metrics.get("lufs", 0),
+                    "segments": len(segment_files),
                 })
+                jobs[job_id]["logs"].append(
+                    f"✅ Variante {variant_label} lista: {metrics.get('duration_seconds', 0):.1f}s, "
+                    f"LUFS: {metrics.get('lufs', 0):.1f}, {len(segment_files)} segmento(s)"
+                )
+            elif variant_error:
                 variant_results.append({
                     "index": variant_idx, "seed": seed, "audio_url": None,
-                    "error": "Generation failed. Checkpoint saved for resume.",
+                    "error": "Segment(s) failed. Checkpoint saved for resume.",
                 })
             else:
-                _save_checkpoint(job_id, {
-                    "job_id": job_id,
-                    "completed_variants": variant_idx + 1,
-                    "total_variants": num_variants,
-                    "seed": seed,
-                    "quantization": quantization,
-                    "style_prompt": style_prompt,
+                variant_results.append({
+                    "index": variant_idx, "seed": seed, "audio_url": None,
+                    "error": "No audio generated",
                 })
 
             jobs[job_id]["completed_variants"] = variant_idx + 1
