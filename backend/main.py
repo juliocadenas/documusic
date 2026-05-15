@@ -1004,23 +1004,46 @@ def _get_env(yue_inference_dir: str, quantization: str = "8bit") -> dict:
 
 
 def _find_audio_file(output_path: str) -> str | None:
-    """Find the generated audio file (MP3 preferred, WAV fallback)."""
-    # Search for MP3 first (YuE with torchcodec generates MP3)
-    audio_files = glob.glob(f"{output_path}/**/*.mp3", recursive=True)
-    if not audio_files:
-        audio_files = glob.glob(f"{output_path}/*.mp3")
-    # Fallback to WAV
-    if not audio_files:
-        audio_files = glob.glob(f"{output_path}/**/*.wav", recursive=True)
-    if not audio_files:
-        audio_files = glob.glob(f"{output_path}/*.wav")
-
-    # Prefer _mixed files (final mix from YuE)
-    mixed_files = [f for f in audio_files if '_mixed' in f]
+    """Find the generated audio file, preferring the final mixed output.
+    
+    Search priority:
+    1. _mixed files (final mix from YuE) - WAV preferred
+    2. Any audio file in the output directory
+    
+    This avoids picking up individual stem files (vtrack.mp3, itrack.mp3)
+    which are not the final mixed output.
+    """
+    # Collect ALL audio files (MP3 + WAV) at once
+    all_files = []
+    for pattern in [f"{output_path}/**/*.mp3", f"{output_path}/*.mp3",
+                    f"{output_path}/**/*.wav", f"{output_path}/*.wav"]:
+        all_files.extend(glob.glob(pattern, recursive=True))
+    
+    # Deduplicate while preserving order
+    seen = set()
+    unique_files = []
+    for f in all_files:
+        if f not in seen:
+            seen.add(f)
+            unique_files.append(f)
+    
+    if not unique_files:
+        return None
+    
+    # Priority 1: _mixed files (final mix from YuE)
+    mixed_files = [f for f in unique_files if '_mixed' in f]
     if mixed_files:
-        audio_files = mixed_files
-
-    return audio_files[0] if audio_files else None
+        # Prefer WAV over MP3 for mixed files (higher quality source)
+        wav_mixed = [f for f in mixed_files if f.endswith('.wav')]
+        if wav_mixed:
+            logger.info(f"[Audio] Found mixed WAV: {wav_mixed[0]}")
+            return wav_mixed[0]
+        logger.info(f"[Audio] Found mixed file: {mixed_files[0]}")
+        return mixed_files[0]
+    
+    # Priority 2: Any file (fallback)
+    logger.warning(f"[Audio] No _mixed file found, using: {unique_files[0]} (total: {len(unique_files)} files)")
+    return unique_files[0]
 
 
 def _finalize_audio(source_path: str, job_id: str, variant_idx: int) -> str:
