@@ -1062,13 +1062,16 @@ def _finalize_audio(source_path: str, job_id: str, variant_idx: int) -> str:
         final_mastered = f"{OUTPUT_DIR}/{job_id}_v{variant_idx + 1}.mp3"
         final_raw = f"{OUTPUT_DIR}/{job_id}_v{variant_idx + 1}_raw.mp3"
 
-    # Convert to MP3 if needed
+    # Convert to MP3 if needed — resample to 44.1kHz for better quality
+    # YuE outputs at 16kHz which sounds muffled; upsampling improves clarity
     if source_path.endswith('.mp3'):
-        import shutil
-        shutil.copy2(source_path, final_raw)
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", source_path, "-ar", "44100", "-b:a", "192k", final_raw],
+            check=True, capture_output=True
+        )
     else:
         subprocess.run(
-            ["ffmpeg", "-y", "-i", source_path, "-b:a", "192k", final_raw],
+            ["ffmpeg", "-y", "-i", source_path, "-ar", "44100", "-b:a", "192k", final_raw],
             check=True, capture_output=True
         )
 
