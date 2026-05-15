@@ -496,7 +496,7 @@ VALID_SECTION_TAGS = {'verse', 'chorus', 'bridge', 'intro', 'outro'}
 # ============================================================
 YUE_PARAMS = {
     "max_new_tokens": 1500,       # 3000 OOM en softmax. 1500 = ~15s por segmento
-    "run_n_segments": 2,          # 2 segmentos = verse+chorus = ~30s total
+    "run_n_segments": 3,          # 3 segmentos = verse+chorus+verse = ~45s total (dinámico)
     "repetition_penalty": 1.2,    # Aumentado de 1.1 → 1.2 para más variedad
     "stage2_batch_size": 1,       # Reducido de 4 → 1 (crítico para VRAM)
     "rescale": True,              # Evitar clipping en la salida
@@ -543,16 +543,87 @@ def find_xcodec_paths():
     return None, None
 
 
-def sanitize_lyrics(lyrics: str) -> str:
+def _is_spanish(text: str) -> bool:
+    """Detecta si un texto es principalmente español."""
+    spanish_markers = [
+        'que ', 'que\n', ' de ', ' la ', ' el ', ' en ', ' por ', ' con ',
+        ' para ', ' un ', ' una ', ' los ', ' las ', ' del ', ' al ',
+        ' está', ' tiene', ' puede', ' como', ' pero', ' más', ' todo',
+        ' bien', ' muy', ' también', ' porque', ' hacia', ' desde',
+        ' hasta', ' entre', ' sobre', ' después', ' antes', ' cada',
+        ' todos', ' estas', ' este', ' esta', ' eso', ' esa', ' ese',
+        ' vamos', ' cant', ' orgullo', ' agrade', ' disfrut',
+        ' millones', ' archivos', ' estudio', ' conocimiento',
+        ' fuentes', ' curso', ' estudiante', ' empleado',
+        ' suscri', ' enseñ', ' clasific', ' brillante',
+        ' increment', ' recurso', ' automatiz', ' industria',
+        ' catalog', ' educaci', ' objetivo',
+    ]
+    text_lower = text.lower()
+    matches = sum(1 for m in spanish_markers if m in text_lower)
+    return matches >= 3
+
+
+def _translate_to_english(text: str) -> tuple[str, bool]:
+    """
+    Traduce texto al inglés si está en español.
+    Retorna (texto_traducido, fue_traducido).
+    """
+    if not _is_spanish(text):
+        return text, False
+
+    try:
+        from deep_translator import GoogleTranslator
+        # Translate line by line to preserve structure
+        lines = text.split('\n')
+        translated_lines = []
+        translator = GoogleTranslator(source='es', target='en')
+
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                translated_lines.append('')
+                continue
+            # Don't translate section tags
+            if stripped.startswith('[') and stripped.endswith(']'):
+                translated_lines.append(stripped)
+                continue
+            try:
+                translated = translator.translate(stripped)
+                translated_lines.append(translated if translated else stripped)
+            except Exception:
+                translated_lines.append(stripped)
+
+        result = '\n'.join(translated_lines)
+        logger.info(f"[Translate] Spanish→English: {len(text)} chars → {len(result)} chars")
+        return result, True
+    except ImportError:
+        logger.warning("[Translate] deep_translator not installed, skipping translation")
+        return text, False
+    except Exception as e:
+        logger.warning(f"[Translate] Translation failed: {e}")
+        return text, False
+
+
+def sanitize_lyrics(lyrics: str) -> tuple[str, bool]:
     """
     Limpia la letra para que YuE la entienda correctamente.
     - Elimina tags de estilo como [Genre: ...], [Vocal: ...], etc.
+    - Elimina tags numerados como [Verse 1], [Verse 2], etc.
+    - Elimina prefijos numerados como "1.-", "2.-", etc.
     - Conserva solo secciones válidas: [verse], [chorus], [bridge], [intro], [outro]
-    - Garantiza que siempre haya al menos 2 secciones
+    - Traduce español → inglés si es necesario (YuE anneal-en-cot = English only)
+    - Garantiza que siempre haya al menos 2 secciones con ~4 líneas cada una
+
+    Retorna (lyrics_formateadas, fue_traducida).
     """
     formatted = lyrics.strip()
 
+    # 0. Detectar y traducir español → inglés
+    formatted, was_translated = _translate_to_english(formatted)
+
     # 1. Eliminar tags no estándar (cualquier [xxx] que NO sea una sección válida)
+    #    Esto incluye [Verse 1], [Verse 2], [Genre: ...], etc.
     formatted = re.sub(
         r'\[(?!verse\b|chorus\b|bridge\b|intro\b|outro\b)[^\]]+\]',
         '',
@@ -560,10 +631,21 @@ def sanitize_lyrics(lyrics: str) -> str:
         flags=re.IGNORECASE
     ).strip()
 
-    # 2. Limpiar líneas vacías excesivas (máximo 2 saltos consecutivos)
+    # 2. Eliminar prefijos numerados como "1.-", "2.-", "3.-", "N."
+    formatted = re.sub(r'^\s*\d+[\.\-]+\s*', '', formatted, flags=re.MULTILINE)
+
+    # 3. Limpiar líneas vacías excesivas (máximo 2 saltos consecutivos)
     formatted = re.sub(r'\n{3,}', '\n\n', formatted)
 
-    # 3. Verificar si quedaron secciones válidas
+    # 4. Normalizar tags de sección a minúscula (YuE espera [verse] no [Verse])
+    for tag in VALID_SECTION_TAGS:
+        formatted = re.sub(
+            rf'\[{tag}\]', f'[{tag}]',
+            formatted,
+            flags=re.IGNORECASE
+        )
+
+    # 5. Verificar si quedaron secciones válidas
     has_sections = any(
         f'[{tag}]' in formatted.lower()
         for tag in VALID_SECTION_TAGS
@@ -589,19 +671,42 @@ def sanitize_lyrics(lyrics: str) -> str:
                 "Front porch swings and firefly lights",
                 "Home is where the music shines",
             ]
-        mid = max(1, len(lines) // 3)
-        verse_lines = lines[:mid]
-        chorus_lines = lines[mid:mid*2] if len(lines) > mid else lines[:mid]
-        bridge_lines = lines[mid*2:] if len(lines) > mid*2 else []
-        formatted = (
-            '[verse]\n' + '\n'.join(verse_lines) + '\n\n' +
-            '[chorus]\n' + '\n'.join(chorus_lines) + '\n\n'
-        )
-        if bridge_lines:
-            formatted += '[bridge]\n' + '\n'.join(bridge_lines) + '\n\n'
-        formatted += '[chorus]\n' + '\n'.join(chorus_lines) + '\n\n'
 
-    return formatted.strip()
+        # Group into sections of ~4 lines (matching official YuE example format)
+        section_size = 4
+        sections = []
+        for i in range(0, len(lines), section_size):
+            chunk = lines[i:i + section_size]
+            if chunk:
+                sections.append(chunk)
+
+        # Assign section types: verse, chorus, verse, chorus, bridge, chorus...
+        section_types = []
+        for i in range(len(sections)):
+            if i == 0:
+                section_types.append('verse')
+            elif i == 1:
+                section_types.append('chorus')
+            elif i == 2:
+                section_types.append('verse')
+            elif i == 3:
+                section_types.append('chorus')
+            elif i == 4:
+                section_types.append('bridge')
+            else:
+                section_types.append('chorus')
+
+        parts = []
+        for stype, slines in zip(section_types, sections):
+            parts.append(f'[{stype}]\n' + '\n'.join(slines))
+
+        # Always end with a final chorus if we have enough sections
+        if len(sections) >= 2:
+            parts.append('[chorus]\n' + '\n'.join(sections[1]))
+
+        formatted = '\n\n'.join(parts)
+
+    return formatted.strip(), was_translated
 
 
 def extract_style_from_lyrics(lyrics: str) -> str:
@@ -775,8 +880,16 @@ async def generate(req: dict, background_tasks: BackgroundTasks):
         style_prompt = enrich_style_prompt(style_prompt)
     logger.info(f"[Generate] Prompt enriquecido ({model}): '{original_prompt}' → '{style_prompt}'")
 
-    # Sanitizar la letra
-    clean_lyrics = sanitize_lyrics(lyrics)
+    # Sanitizar la letra (ahora retorna tuple: (lyrics, was_translated))
+    clean_lyrics, lyrics_translated = sanitize_lyrics(lyrics)
+    if lyrics_translated:
+        logger.info(f"[Generate] ⚠️ Lyrics traducidas español→inglés para modelo English-only")
+
+    # Calcular run_n_segments dinámico basado en secciones de lyrics
+    import re as _re
+    section_count = len(_re.findall(r'\[(?:verse|chorus|bridge|intro|outro)\]', clean_lyrics, flags=_re.IGNORECASE))
+    dynamic_segments = min(max(section_count, 2), 5)  # Entre 2 y 5 segmentos
+    logger.info(f"[Generate] Secciones detectadas: {section_count} → run_n_segments={dynamic_segments}")
 
     # Generate seeds
     seeds = []
@@ -873,7 +986,8 @@ async def generate(req: dict, background_tasks: BackgroundTasks):
 
     background_tasks.add_task(
         run_yue_inference_multi,
-        job_id, clean_lyrics, style_prompt, yue_script, seeds, quantization
+        job_id, clean_lyrics, style_prompt, yue_script, seeds, quantization,
+        run_n_segments=dynamic_segments
     )
 
     return {
@@ -888,13 +1002,15 @@ async def generate(req: dict, background_tasks: BackgroundTasks):
     }
 
 
-def _build_inference_cmd(tmp_dir: str, output_path: str, yue_script: str, seed: int) -> list:
+def _build_inference_cmd(tmp_dir: str, output_path: str, yue_script: str, seed: int, run_n_segments: int = None) -> list:
     """Build the YuE inference command with optimized parameters (Fase 0.1)."""
     yue_inference_dir = os.path.dirname(yue_script) if "inference" in yue_script else "/opt/YuE/inference"
 
     # CWD = /opt/YuE/inference (donde están mm_tokenizer_v0.2_hf/, xcodec_mini_infer/, etc.)
     # PYTHONPATH ya incluye /opt/YuE/inference/xcodec_mini_infer para que models/ sea importable
     cwd = yue_inference_dir
+
+    n_segs = run_n_segments if run_n_segments else YUE_PARAMS["run_n_segments"]
 
     cmd = [
         "python3", "infer.py",
@@ -906,7 +1022,7 @@ def _build_inference_cmd(tmp_dir: str, output_path: str, yue_script: str, seed: 
         "--cuda_idx", "0",
         # FASE 0.1: Parámetros optimizados
         "--max_new_tokens", str(YUE_PARAMS["max_new_tokens"]),
-        "--run_n_segments", str(YUE_PARAMS["run_n_segments"]),
+        "--run_n_segments", str(n_segs),
         "--repetition_penalty", str(YUE_PARAMS["repetition_penalty"]),
         "--stage2_batch_size", str(YUE_PARAMS["stage2_batch_size"]),
         "--seed", str(seed),
@@ -1095,11 +1211,12 @@ def _finalize_audio(source_path: str, job_id: str, variant_idx: int) -> str:
         return final_mastered
 
 
-def run_yue_inference_multi(job_id: str, lyrics: str, style_prompt: str, yue_script: str, seeds: list, quantization: str = "8bit"):
+def run_yue_inference_multi(job_id: str, lyrics: str, style_prompt: str, yue_script: str, seeds: list, quantization: str = "8bit", run_n_segments: int = None):
     """
     FASE 0.3: Multi-variant generation.
     Generates multiple variants with different seeds, applies mastering to each.
     quantization: '8bit' or '16bit' — controls model loading behavior.
+    run_n_segments: Override for YUE_PARAMS['run_n_segments'] (dynamic based on lyrics sections).
     """
     try:
         import threading
@@ -1123,8 +1240,9 @@ def run_yue_inference_multi(job_id: str, lyrics: str, style_prompt: str, yue_scr
             variant_output = f"{OUTPUT_DIR}/{job_id}/v{variant_idx + 1}"
             os.makedirs(variant_output, exist_ok=True)
 
-            # Build command with optimized parameters
-            cmd, yue_inference_dir = _build_inference_cmd(tmp_dir, variant_output, yue_script, seed)
+            # Build command with optimized parameters (use dynamic run_n_segments)
+            n_segs = run_n_segments if run_n_segments else YUE_PARAMS["run_n_segments"]
+            cmd, yue_inference_dir = _build_inference_cmd(tmp_dir, variant_output, yue_script, seed, n_segs)
             env = _get_env(yue_inference_dir, quantization)
 
             logger.info(f"[YuE] 🚀 Variant {variant_label} | Seed: {seed} | CMD: {' '.join(cmd)}")

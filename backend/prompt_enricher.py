@@ -693,8 +693,8 @@ def enrich_style_for_yue(raw_prompt: str) -> str:
         _add_tag("vocal")
         _add_tag("vocal")
     
-    # Build space-separated string
-    result = " ".join(tags)
+    # Build space-separated string (ALL lowercase to match official YuE examples)
+    result = " ".join(tags).lower()
     
     # Enforce max 100 chars
     if len(result) > 100:
