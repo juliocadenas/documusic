@@ -2173,219 +2173,63 @@ def _style_to_heartmula_tags(style_prompt: str) -> str:
     """
     Convierte un style_prompt de DocuMusic al formato de tags de HeartMuLa.
     
-    HeartMuLa espera tags como: "genre: pop, mood: happy, instrument: piano, guitar, bpm: 120"
-    Si el prompt ya tiene formato de tags, lo pasa directamente.
-    Si es un prompt libre/enriquecido, detecta el género y genera tags completos
-    con genre, mood, instrument y bpm usando un mapa de conocimiento musical.
+    FORMATO CORRECTO de HeartMuLa (según documentación oficial y GitHub issue #17):
+      - Tags separados por coma SIN espacios después de la coma
+      - Sin prefijos como "genre:", "mood:", "instrument:", "bpm:"
+      - Ejemplo: "piano,happy,wedding,synthesizer,romantic"
+      - Ejemplo: "country,americana,warm,nostalgic,acoustic guitar,fiddle,steel guitar"
+    
+    El pipeline internamente envuelve los tags en <tag>...</tag> y los tokeniza.
     """
+    import re as _re
     prompt_lower = style_prompt.lower().strip()
 
-    # Si ya tiene formato de tags de HeartMuLa, usarlo directamente
-    if any(kw in prompt_lower for kw in ['genre:', 'mood:', 'bpm:', 'instrument:']):
-        return style_prompt.strip()
+    # Si el prompt ya parece tener formato HeartMuLa (tags simples separados por coma),
+    # limpiarlo y usarlo directamente
+    # Detectar si tiene prefijos "genre:" etc. (formato INCORRECTO que debemos convertir)
 
     # ============================================================
-    # Mapa de conocimiento: géneros → tags HeartMuLa
+    # Mapa de conocimiento: géneros → tags HeartMuLa (formato correcto)
+    # Cada valor es una lista de tags simples separados por coma sin espacios
     # ============================================================
     GENRE_TAG_MAP = {
-        "country": {
-            "genre": "country, americana",
-            "mood": "warm, nostalgic, heartfelt",
-            "instrument": "acoustic guitar, fiddle, steel guitar, banjo, upright bass, harmonica",
-            "bpm": "120",
-        },
-        "rock": {
-            "genre": "rock, alternative rock",
-            "mood": "energetic, powerful, rebellious",
-            "instrument": "electric guitar, bass, drums, distorted guitar",
-            "bpm": "130",
-        },
-        "pop": {
-            "genre": "pop, contemporary pop",
-            "mood": "upbeat, catchy, bright",
-            "instrument": "synth, piano, drum machine, bass synth",
-            "bpm": "120",
-        },
-        "hip-hop": {
-            "genre": "hip-hop, rap",
-            "mood": "confident, rhythmic, groovy",
-            "instrument": "drum machine, bass, synth pads, sampler",
-            "bpm": "90",
-        },
-        "rap": {
-            "genre": "hip-hop, rap",
-            "mood": "confident, rhythmic, groovy",
-            "instrument": "drum machine, 808 bass, synth pads, sampler",
-            "bpm": "90",
-        },
-        "jazz": {
-            "genre": "jazz, smooth jazz",
-            "mood": "relaxed, sophisticated, soulful",
-            "instrument": "saxophone, piano, double bass, brushes drums, trumpet",
-            "bpm": "110",
-        },
-        "blues": {
-            "genre": "blues, rhythm and blues",
-            "mood": "soulful, melancholic, gritty",
-            "instrument": "electric guitar, harmonica, bass, drums, piano",
-            "bpm": "100",
-        },
-        "r&b": {
-            "genre": "r&b, soul",
-            "mood": "smooth, sensual, groovy",
-            "instrument": "bass, synth pads, drum machine, electric piano",
-            "bpm": "95",
-        },
-        "soul": {
-            "genre": "soul, r&b",
-            "mood": "emotional, passionate, warm",
-            "instrument": "bass, horns, electric piano, drums, organ",
-            "bpm": "100",
-        },
-        "reggaeton": {
-            "genre": "reggaeton, latin urban",
-            "mood": "party, energetic, sensual",
-            "instrument": "dembow beat, bass, synth, percussion, reggaeton kick",
-            "bpm": "95",
-        },
-        "reggae": {
-            "genre": "reggae, roots reggae",
-            "mood": "chill, laid-back, positive",
-            "instrument": "bass, drums, electric guitar skank, organ, percussion",
-            "bpm": "80",
-        },
-        "edm": {
-            "genre": "edm, electronic dance",
-            "mood": "energetic, euphoric, driving",
-            "instrument": "synth, drum machine, bass drop, electronic pads",
-            "bpm": "128",
-        },
-        "electronic": {
-            "genre": "electronic, edm",
-            "mood": "energetic, futuristic, hypnotic",
-            "instrument": "synth, drum machine, bass, electronic pads, sequencer",
-            "bpm": "125",
-        },
-        "techno": {
-            "genre": "techno, electronic",
-            "mood": "dark, hypnotic, driving",
-            "instrument": "drum machine, synth, bass, sequencer, modular synth",
-            "bpm": "130",
-        },
-        "house": {
-            "genre": "house, deep house",
-            "mood": "groovy, rhythmic, uplifting",
-            "instrument": "drum machine, bass, synth pads, piano house chords",
-            "bpm": "124",
-        },
-        "folk": {
-            "genre": "folk, acoustic",
-            "mood": "intimate, warm, storytelling",
-            "instrument": "acoustic guitar, violin, mandolin, upright bass, flute",
-            "bpm": "105",
-        },
-        "acoustic": {
-            "genre": "acoustic, folk",
-            "mood": "intimate, warm, gentle",
-            "instrument": "acoustic guitar, piano, cello, light percussion",
-            "bpm": "100",
-        },
-        "classical": {
-            "genre": "classical, orchestral",
-            "mood": "majestic, emotional, dramatic",
-            "instrument": "strings, piano, orchestra, woodwinds, brass",
-            "bpm": "90",
-        },
-        "latin": {
-            "genre": "latin, latin pop",
-            "mood": "passionate, rhythmic, celebratory",
-            "instrument": "acoustic guitar, percussion, trumpet, bass, piano",
-            "bpm": "110",
-        },
-        "salsa": {
-            "genre": "salsa, latin",
-            "mood": "energetic, passionate, celebratory",
-            "instrument": "congas, timbales, trumpet, piano, bass, trombone",
-            "bpm": "180",
-        },
-        "bachata": {
-            "genre": "bachata, latin",
-            "mood": "romantic, sensual, heartfelt",
-            "instrument": "acoustic guitar, bongos, bass, güira, electric guitar",
-            "bpm": "110",
-        },
-        "cumbia": {
-            "genre": "cumbia, latin",
-            "mood": "festive, danceable, joyful",
-            "instrument": "accordion, drums, bass, guiro, guitar",
-            "bpm": "100",
-        },
-        "ballad": {
-            "genre": "ballad, pop ballad",
-            "mood": "emotional, romantic, tender",
-            "instrument": "piano, strings, acoustic guitar, soft drums",
-            "bpm": "75",
-        },
-        "metal": {
-            "genre": "metal, heavy metal",
-            "mood": "aggressive, intense, dark",
-            "instrument": "distorted guitar, double kick drums, bass, growling vocals",
-            "bpm": "150",
-        },
-        "punk": {
-            "genre": "punk, punk rock",
-            "mood": "rebellious, fast, raw",
-            "instrument": "electric guitar, bass, fast drums, distorted vocals",
-            "bpm": "170",
-        },
-        "indie": {
-            "genre": "indie, indie rock",
-            "mood": "melancholic, introspective, creative",
-            "instrument": "electric guitar, bass, drums, synth, reverb guitar",
-            "bpm": "115",
-        },
-        "funk": {
-            "genre": "funk, groove",
-            "mood": "groovy, energetic, danceable",
-            "instrument": "bass slap, electric guitar, drums, horns, clavinet",
-            "bpm": "110",
-        },
-        "disco": {
-            "genre": "disco, dance",
-            "mood": "fun, danceable, groovy",
-            "instrument": "bass, drums, strings, synth, horns, rhythm guitar",
-            "bpm": "120",
-        },
-        "gospel": {
-            "genre": "gospel, spiritual",
-            "mood": "uplifting, powerful, joyful",
-            "instrument": "piano, organ, choir, bass, drums",
-            "bpm": "100",
-        },
-        "trap": {
-            "genre": "trap, hip-hop",
-            "mood": "dark, heavy, confident",
-            "instrument": "808 bass, hi-hats, synth, drum machine",
-            "bpm": "140",
-        },
-        "lo-fi": {
-            "genre": "lo-fi, chillhop",
-            "mood": "relaxed, nostalgic, mellow",
-            "instrument": "lo-fi piano, vinyl crackle, soft drums, bass, jazz guitar",
-            "bpm": "80",
-        },
-        "singer-songwriter": {
-            "genre": "singer-songwriter, folk pop",
-            "mood": "intimate, personal, reflective",
-            "instrument": "acoustic guitar, piano, light percussion, strings",
-            "bpm": "100",
-        },
+        "country": "country,americana,warm,nostalgic,heartfelt,acoustic guitar,fiddle,steel guitar,banjo,upright bass,harmonica",
+        "rock": "rock,alternative rock,energetic,powerful,rebellious,electric guitar,bass,drums,distorted guitar",
+        "pop": "pop,contemporary pop,upbeat,catchy,bright,synth,piano,drum machine,bass synth",
+        "hip-hop": "hip-hop,rap,confident,rhythmic,groovy,drum machine,bass,synth pads,sampler",
+        "rap": "hip-hop,rap,confident,rhythmic,groovy,drum machine,808 bass,synth pads,sampler",
+        "jazz": "jazz,smooth jazz,relaxed,sophisticated,soulful,saxophone,piano,double bass,trumpet",
+        "blues": "blues,rhythm and blues,soulful,melancholic,gritty,electric guitar,harmonica,bass,drums,piano",
+        "r&b": "r&b,soul,smooth,sensual,groovy,bass,synth pads,drum machine,electric piano",
+        "soul": "soul,r&b,emotional,passionate,warm,bass,horns,electric piano,drums,organ",
+        "reggaeton": "reggaeton,latin urban,party,energetic,sensual,dembow beat,bass,synth,percussion",
+        "reggae": "reggae,roots reggae,chill,laid-back,positive,bass,drums,electric guitar,organ,percussion",
+        "edm": "edm,electronic dance,energetic,euphoric,driving,synth,drum machine,bass drop,electronic pads",
+        "electronic": "electronic,edm,energetic,futuristic,hypnotic,synth,drum machine,bass,electronic pads",
+        "techno": "techno,electronic,dark,hypnotic,driving,drum machine,synth,bass,sequencer",
+        "house": "house,deep house,groovy,rhythmic,uplifting,drum machine,bass,synth pads,piano",
+        "folk": "folk,acoustic,intimate,warm,storytelling,acoustic guitar,violin,mandolin,upright bass,flute",
+        "acoustic": "acoustic,folk,intimate,warm,gentle,acoustic guitar,piano,cello,light percussion",
+        "classical": "classical,orchestral,majestic,emotional,dramatic,strings,piano,orchestra,woodwinds,brass",
+        "latin": "latin,latin pop,passionate,rhythmic,celebratory,acoustic guitar,percussion,trumpet,bass,piano",
+        "salsa": "salsa,latin,energetic,passionate,celebratory,congas,timbales,trumpet,piano,bass,trombone",
+        "bachata": "bachata,latin,romantic,sensual,heartfelt,acoustic guitar,bongos,bass,electric guitar",
+        "cumbia": "cumbia,latin,festive,danceable,joyful,accordion,drums,bass,guiro,guitar",
+        "ballad": "ballad,pop ballad,emotional,romantic,tender,piano,strings,acoustic guitar,soft drums",
+        "metal": "metal,heavy metal,aggressive,intense,dark,distorted guitar,double kick drums,bass",
+        "punk": "punk,punk rock,rebellious,fast,raw,electric guitar,bass,fast drums",
+        "indie": "indie,indie rock,melancholic,introspective,creative,electric guitar,bass,drums,synth",
+        "funk": "funk,groove,groovy,energetic,danceable,bass slap,electric guitar,drums,horns,clavinet",
+        "disco": "disco,dance,fun,danceable,groovy,bass,drums,strings,synth,horns,rhythm guitar",
+        "gospel": "gospel,spiritual,uplifting,powerful,joyful,piano,organ,choir,bass,drums",
+        "trap": "trap,hip-hop,dark,heavy,confident,808 bass,hi-hats,synth,drum machine",
+        "lo-fi": "lo-fi,chillhop,relaxed,nostalgic,mellow,lo-fi piano,soft drums,bass,jazz guitar",
+        "singer-songwriter": "singer-songwriter,folk pop,intimate,personal,reflective,acoustic guitar,piano,light percussion,strings",
     }
 
     # ============================================================
     # Detectar género en el prompt
     # ============================================================
-    # Palabras clave → clave del mapa
     GENRE_KEYWORDS = {
         "country": ["country", "americana", "nashville", "honky-tonk", "honky tonk", "western swing", "tex-mex", "texas country", "red dirt"],
         "rock": ["rock", "rock and roll", "rock & roll", "classic rock", "hard rock", "soft rock", "alt-rock", "grunge", "post-rock"],
@@ -2405,7 +2249,7 @@ def _style_to_heartmula_tags(style_prompt: str) -> str:
         "folk": ["folk", "folk rock", "neo-folk", "americana folk", "indie folk", "anti-folk"],
         "acoustic": ["acoustic", "unplugged", "acoustic cover", "solo acoustic"],
         "classical": ["classical", "orchestral", "symphony", "chamber music", "baroque", "romantic era", "neo-classical", "neoclassical"],
-        "latin": ["latin", "latino", "latin pop", "latin rock", "latin music", "música latina"],
+        "latin": ["latin", "latino", "latin pop", "latin rock", "latin music"],
         "salsa": ["salsa", "salsa dura", "salsa romantica", "salsa brava"],
         "bachata": ["bachata", "bachata sensual", "bachata urbana", "dominican bachata"],
         "cumbia": ["cumbia", "cumbia sonidera", "cumbia villera", "cumbia colombiana"],
@@ -2432,39 +2276,20 @@ def _style_to_heartmula_tags(style_prompt: str) -> str:
             best_score = score
             detected_genre = genre_key
 
-    # Si detectamos un género, generar tags completos
+    # Si detectamos un género, generar tags en formato HeartMuLa
     if detected_genre and detected_genre in GENRE_TAG_MAP:
-        tags_info = GENRE_TAG_MAP[detected_genre]
-        tags_parts = [
-            f"genre: {tags_info['genre']}",
-            f"mood: {tags_info['mood']}",
-            f"instrument: {tags_info['instrument']}",
-            f"bpm: {tags_info['bpm']}",
-        ]
+        base_tags = GENRE_TAG_MAP[detected_genre]
 
         # Intentar extraer mood adicional del prompt
-        MOOD_KEYWORDS = {
-            "happy": "happy, joyful", "sad": "sad, melancholic", "dark": "dark, moody",
-            "bright": "bright, cheerful", "aggressive": "aggressive, intense",
-            "calm": "calm, peaceful", "chill": "chill, relaxed", "epic": "epic, cinematic",
-            "romantic": "romantic, tender", "party": "party, energetic",
-            "melancholic": "melancholic, introspective", "uplifting": "uplifting, inspiring",
-            "nostalgic": "nostalgic, wistful", "dramatic": "dramatic, intense",
-            "groovy": "groovy, funky", "ethereal": "ethereal, atmospheric",
-            "raw": "raw, gritty", "smooth": "smooth, polished",
-        }
-        extra_moods = []
-        for mood_kw, mood_tags in MOOD_KEYWORDS.items():
-            if mood_kw in prompt_lower and mood_kw not in tags_info['mood'].lower():
-                extra_moods.append(mood_tags)
-        if extra_moods:
-            tags_parts[1] = f"mood: {tags_info['mood']}, {', '.join(extra_moods[:2])}"
-
-        # Intentar extraer tempo/BPM del prompt
-        import re as _re
-        bpm_match = _re.search(r'(\d{2,3})\s*bpm', prompt_lower)
-        if bpm_match:
-            tags_parts[3] = f"bpm: {bpm_match.group(1)}"
+        MOOD_KEYWORDS = [
+            "happy", "sad", "dark", "bright", "aggressive", "calm", "chill", "epic",
+            "romantic", "party", "melancholic", "uplifting", "nostalgic", "dramatic",
+            "groovy", "ethereal", "raw", "smooth",
+        ]
+        extra_tags = []
+        for mood_kw in MOOD_KEYWORDS:
+            if mood_kw in prompt_lower and mood_kw not in base_tags:
+                extra_tags.append(mood_kw)
 
         # Intentar extraer instrumentos adicionales del prompt
         INST_KEYWORDS = [
@@ -2473,25 +2298,37 @@ def _style_to_heartmula_tags(style_prompt: str) -> str:
             "accordion", "mandolin", "ukulele", "banjo", "dobro", "steel guitar",
             "fiddle", "harmonica", "tambourine", "marimba", "xylophone",
         ]
-        extra_instruments = []
         for inst in INST_KEYWORDS:
-            if inst in prompt_lower and inst not in tags_info['instrument'].lower():
-                extra_instruments.append(inst)
-        if extra_instruments:
-            tags_parts[2] = f"instrument: {tags_info['instrument']}, {', '.join(extra_instruments[:3])}"
+            if inst in prompt_lower and inst not in base_tags:
+                extra_tags.append(inst)
 
-        result = ", ".join(tags_parts)
-        logger.info(f"[HeartMuLa] 🏷️ Tags generados: '{result}' (género detectado: {detected_genre}, score: {best_score:.1f})")
-        return result
+        # Combinar: tags base + extras (limitar a ~15 tags para no saturar)
+        if extra_tags:
+            all_tags = base_tags + "," + ",".join(extra_tags[:5])
+        else:
+            all_tags = base_tags
 
-    # Fallback: si no se detectó género, construir tags genéricos a partir del prompt
-    # Extraer las primeras 3-4 palabras significativas como género
-    words = [w for w in style_prompt.strip().split() if len(w) > 2][:6]
-    genre_fallback = " ".join(words) if words else "pop"
+        # Limpiar: eliminar espacios después de comas (formato HeartMuLa)
+        all_tags = _re.sub(r',\s+', ',', all_tags)
 
-    tags = f"genre: {genre_fallback}, mood: emotional, instrument: piano, guitar, bass, drums, bpm: 110"
-    logger.info(f"[HeartMuLa] 🏷️ Tags fallback: '{tags}' (no se detectó género específico)")
-    return tags
+        logger.info(f"[HeartMuLa] 🏷️ Tags generados: '{all_tags}' (género detectado: {detected_genre}, score: {best_score:.1f})")
+        return all_tags
+
+    # Fallback: si no se detectó género, extraer palabras clave del prompt
+    # Limpiar el prompt: quitar palabras comunes, quedarnos con sustantivos/adjetivos
+    stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'with', 'in', 'on', 'at', 'to', 'for',
+                  'of', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had',
+                  'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might',
+                  'style', 'sound', 'like', 'feel', 'music', 'song', 'track', 'make', 'male',
+                  'female', 'voice', 'voices', 'alternate', 'vocals', 'singing'}
+    words = [w.strip(',.') for w in style_prompt.strip().split() if len(w) > 2 and w.lower() not in stop_words]
+    fallback_tags = ",".join(words[:10]) if words else "pop,emotional"
+
+    # Limpiar espacios después de comas
+    fallback_tags = _re.sub(r',\s+', ',', fallback_tags)
+
+    logger.info(f"[HeartMuLa] 🏷️ Tags fallback: '{fallback_tags}' (no se detectó género específico)")
+    return fallback_tags
 
 
 @app.get("/api/job/{job_id}")
