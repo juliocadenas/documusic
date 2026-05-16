@@ -2038,8 +2038,8 @@ def run_heartmula_inference(job_id: str, lyrics: str, style_prompt: str, seeds: 
                 "--save_path", output_mp3,
                 "--max_audio_length_ms", str(max_audio_ms),
                 "--topk", "50",
-                "--temperature", "1.0",
-                "--cfg_scale", "3.0",
+                "--temperature", "0.8",
+                "--cfg_scale", "5.0",
                 "--lazy_load", "true",
             ]
 
