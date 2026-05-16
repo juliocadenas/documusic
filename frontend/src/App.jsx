@@ -6,6 +6,7 @@ const MODEL_LABELS = {
   'yue': 'YuE 7B',
   'ace-step': 'ACE-Step 1.5',
   'heartmula': 'HeartMuLa 3B',
+  'diffrhythm': 'DiffRhythm2',
 };
 
 const LoadingOverlay = ({ status, logs, numVariants, completedVariants, startTime, serverAlive, gpuStats, subprocessAlive, secondsSinceActivity, previewUrl, totalSegments, completedSegments, reconnecting, currentModel }) => {
@@ -212,7 +213,8 @@ const Toast = ({ msg, type }) => <div className={`toast ${type}`}>{msg}</div>;
 const MODELS = [
   { id: 'yue', name: 'YuE 7B', badge: 'Letra + Voz', desc: 'Voces cantadas desde tu letra. Modelo principal de DocuMusic. Mayor control sobre la letra.', className: 'yue' },
   { id: 'ace-step', name: 'ACE-Step 1.5', badge: 'Alt', desc: 'Modelo alternativo 3.5B. Mejor calidad de audio, voces e instrumentación. Más rápido.', className: 'ace' },
-  { id: 'heartmula', name: 'HeartMuLa 3B', badge: '⭐ Recomendado', desc: 'El mejor modelo open-source 2026. Multilingual, alta adherencia a letras, calidad comparable a Suno. Tags de estilo.', className: 'heartmula' },
+  { id: 'heartmula', name: 'HeartMuLa 3B', badge: 'Alt', desc: 'Modelo 3B multilingual. Alta adherencia a letras. Tags de estilo separados por coma.', className: 'heartmula' },
+  { id: 'diffrhythm', name: 'DiffRhythm2', badge: '🚀 Rápido', desc: 'Block Flow Matching 1.1B. Ultra rápido (15s), alta calidad, buen seguimiento de estilo y voz. Recomendado para country/rock.', className: 'diffrhythm' },
 ];
 
 const VariantCard = ({ variant, isSelected, onSelect, jobPrefix }) => {

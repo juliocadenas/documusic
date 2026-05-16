@@ -22,6 +22,8 @@ services:
       - /home/pepe/AI_MODELS/ace-step:/opt/ACE-Step
       # HeartMuLa repo (persistente en host)
       - /home/pepe/AI_MODELS/heartlib:/opt/heartlib
+      # DiffRhythm2 repo (persistente en host)
+      - /home/pepe/AI_MODELS/DiffRhythm2:/opt/DiffRhythm2
       # Outputs persistentes
       - ./outputs:/app/outputs
     environment:

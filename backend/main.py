@@ -37,6 +37,8 @@ ACESTEP_MODEL_ID = "ACE-Step/ACE-Step-v1-3.5B"
 ACESTEP_MODEL_DIR = f"{MODELS_DIR}/ACE-Step-v1-3.5B"
 HEARTMULA_DIR = "/opt/heartlib"
 HEARTMULA_CKPT_DIR = f"{MODELS_DIR}/HeartMuLa"
+DIFFRHYTHM_DIR = "/opt/DiffRhythm2"
+DIFFRHYTHM_MODEL_DIR = f"{MODELS_DIR}/DiffRhythm2"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs("/app/tmp", exist_ok=True)
 
@@ -804,6 +806,11 @@ def status():
             and os.path.exists(f"{HEARTMULA_CKPT_DIR}/HeartMuLa-oss-3B")
             and os.path.exists(f"{HEARTMULA_CKPT_DIR}/HeartCodec-oss")
         ),
+        "diffrhythm_ready": (
+            os.path.exists(f"{DIFFRHYTHM_DIR}/diffrhythm2/cfm.py")
+            and os.path.exists(f"{DIFFRHYTHM_MODEL_DIR}/model.safetensors")
+            and os.path.exists(f"{DIFFRHYTHM_MODEL_DIR}/decoder.bin")
+        ),
         "yue_script": yue_script,
         "yue_files": yue_files[:20],
         "model_files": model_files,
@@ -817,6 +824,10 @@ def status():
                 os.path.exists(f"{HEARTMULA_DIR}/examples/run_music_generation.py")
                 and os.path.exists(f"{HEARTMULA_CKPT_DIR}/HeartMuLa-oss-3B")
                 and os.path.exists(f"{HEARTMULA_CKPT_DIR}/HeartCodec-oss")
+            ),
+            "diffrhythm": (
+                os.path.exists(f"{DIFFRHYTHM_DIR}/diffrhythm2/cfm.py")
+                and os.path.exists(f"{DIFFRHYTHM_MODEL_DIR}/model.safetensors")
             ),
         },
     }
@@ -1051,6 +1062,50 @@ async def generate(req: dict, background_tasks: BackgroundTasks):
             "generated_lyrics": clean_lyrics,
             "audio_url": None,
             "message": f"🎵 Generando {num_variants} variante(s) con HeartMuLa 3B...",
+            "model_status": "generating",
+            "num_variants": num_variants,
+            "seeds": seeds,
+        }
+
+    # ============================================================
+    # === DIFFRHYTHM2 DISPATCH ===
+    # ============================================================
+    if model == "diffrhythm":
+        if not os.path.exists(DIFFRHYTHM_DIR) or not os.path.exists(f"{DIFFRHYTHM_MODEL_DIR}/model.safetensors"):
+            return {
+                "status": "error",
+                "message": "DiffRhythm2 no está instalado. Verifica que /opt/DiffRhythm2 y los modelos existan.",
+                "model_status": "unavailable",
+            }
+
+        logger.info(f"[Generate] Job {job_id} | Model: DiffRhythm2 1.1B | Style: '{style_prompt}' | Variants: {num_variants}")
+
+        jobs[job_id] = {
+            "status": "generating",
+            "audio_url": None,
+            "logs": [
+                f"🎯 Generando {num_variants} variante(s) con DiffRhythm2 1.1B",
+                f"Seeds: {seeds}",
+                f"Style: {style_prompt}",
+            ],
+            "variants": [],
+            "num_variants": num_variants,
+            "completed_variants": 0,
+            "seeds": seeds,
+            "model": "diffrhythm",
+        }
+
+        background_tasks.add_task(
+            run_diffrhythm_inference,
+            job_id, clean_lyrics, style_prompt, seeds
+        )
+
+        return {
+            "status": "success",
+            "job_id": job_id,
+            "generated_lyrics": clean_lyrics,
+            "audio_url": None,
+            "message": f"🎵 Generando {num_variants} variante(s) con DiffRhythm2 1.1B...",
             "model_status": "generating",
             "num_variants": num_variants,
             "seeds": seeds,
@@ -2329,6 +2384,303 @@ def _style_to_heartmula_tags(style_prompt: str) -> str:
 
     logger.info(f"[HeartMuLa] 🏷️ Tags fallback: '{fallback_tags}' (no se detectó género específico)")
     return fallback_tags
+
+
+def _convert_lyrics_to_lrc(lyrics: str) -> list:
+    """Convierte letras de DocuMusic al formato LRC de DiffRhythm2.
+    
+    DiffRhythm2 usa secciones: [start], [verse], [chorus], [outro], [end]
+    Retorna una lista de líneas en formato LRC.
+    """
+    lines = lyrics.strip().split("\n")
+    lrc_lines = ["[start]"]
+    
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        # Detect section headers like [Verse], [Chorus], etc.
+        section_match = re.match(r'^\[(intro|verse|chorus|bridge|outro|inst|solo|hook|break)\]$', line, re.IGNORECASE)
+        if section_match:
+            tag = section_match.group(1).lower()
+            lrc_lines.append(f"[{tag}]")
+        elif line.startswith("[") and line.endswith("]"):
+            # Skip unknown tags
+            continue
+        else:
+            lrc_lines.append(line)
+    
+    lrc_lines.append("[end]")
+    return lrc_lines
+
+
+def _style_to_diffrhythm_prompt(style_prompt: str) -> str:
+    """Convierte un style_prompt enriquecido al formato de texto de DiffRhythm2.
+    
+    DiffRhythm2 usa texto libre para describir el estilo (no tags).
+    El style_prompt ya viene enriquecido por prompt_enricher.
+    """
+    # DiffRhythm2 acepta texto descriptivo libre
+    # Incluir indicaciones de voz si están presentes
+    prompt = style_prompt.strip()
+    
+    # Detectar preferencia de voz
+    voice_hints = []
+    prompt_lower = prompt.lower()
+    if any(w in prompt_lower for w in ['male', 'masculine', 'man', 'boy']):
+        voice_hints.append("male vocals")
+    elif any(w in prompt_lower for w in ['female', 'feminine', 'woman', 'girl']):
+        voice_hints.append("female vocals")
+    
+    if voice_hints and 'vocal' not in prompt_lower:
+        prompt = f"{prompt}, {', '.join(voice_hints)}"
+    
+    return prompt
+
+
+def run_diffrhythm_inference(job_id: str, lyrics: str, style_prompt: str, seeds: list):
+    """
+    Run DiffRhythm2 1.1B inference.
+    Uses Block Flow Matching for fast, high-quality music generation.
+    
+    DiffRhythm2 input:
+    - lyrics: LRC format with [start], [verse], [chorus], [outro], [end] sections
+    - style_prompt: free text describing genre, instruments, mood, voice type
+    """
+    try:
+        import time as _time
+        import sys
+        
+        # Add DiffRhythm2 to Python path
+        if DIFFRHYTHM_DIR not in sys.path:
+            sys.path.insert(0, DIFFRHYTHM_DIR)
+        
+        from diffrhythm2.cfm import CFM
+        from diffrhythm2.backbones.dit import DiT
+        from bigvgan.model import Generator as BigVGANGenerator
+        from muq import MuQMuLan
+        from safetensors.torch import load_file
+        from g2p.g2p_generation import chn_eng_g2p
+        
+        DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
+        tmp_dir = f"/app/tmp/{job_id}"
+        os.makedirs(tmp_dir, exist_ok=True)
+        
+        num_variants = len(seeds)
+        variant_results = []
+        
+        # Convert style prompt
+        dr_style = _style_to_diffrhythm_prompt(style_prompt)
+        jobs[job_id]["logs"].append(f"🎨 DiffRhythm2 style: {dr_style[:100]}")
+        
+        # Convert lyrics to LRC format
+        lrc_lines = _convert_lyrics_to_lrc(lyrics)
+        
+        # STRUCT tokens for DiffRhythm2
+        STRUCT = {
+            "[start]": 500, "[end]": 501, "[intro]": 502, "[verse]": 503,
+            "[chorus]": 504, "[outro]": 505, "[inst]": 506, "[solo]": 507,
+            "[bridge]": 508, "[hook]": 509, "[break]": 510, "[stop]": 511,
+            "[space]": 512
+        }
+        STRUCT_PATTERN = re.compile(r'^\[.*?\]$')
+        
+        # Load model config
+        with open(f"{DIFFRHYTHM_MODEL_DIR}/config.json") as f:
+            model_config = json.load(f)
+        model_config['use_flex_attn'] = False
+        
+        # Build and load CFM model
+        jobs[job_id]["logs"].append("📦 Cargando modelo DiffRhythm2...")
+        model = CFM(
+            transformer=DiT(**model_config),
+            num_channels=model_config['mel_dim'],
+            block_size=model_config['block_size'],
+        )
+        ckpt = load_file(f"{DIFFRHYTHM_MODEL_DIR}/model.safetensors")
+        model.load_state_dict(ckpt)
+        model = model.to(DEVICE)
+        
+        # Load MuQ-MuLan style encoder
+        mulan = MuQMuLan.from_pretrained("OpenMuQ/MuQ-MuLan-large", cache_dir=MODELS_DIR)
+        mulan = mulan.to(DEVICE)
+        
+        # Load decoder
+        decoder = BigVGANGenerator(
+            f"{DIFFRHYTHM_MODEL_DIR}/decoder.json",
+            f"{DIFFRHYTHM_MODEL_DIR}/decoder.bin"
+        )
+        decoder = decoder.to(DEVICE)
+        SR = decoder.h.sampling_rate
+        
+        jobs[job_id]["logs"].append(f"✅ Modelo cargado (SR: {SR}Hz, params: {sum(p.numel() for p in model.parameters()):,})")
+        
+        # Encode style prompt
+        jobs[job_id]["logs"].append(f"🎵 Codificando estilo: {dr_style[:80]}...")
+        with torch.no_grad():
+            style_embed = mulan(texts=[dr_style])
+        style_embed = style_embed.to(DEVICE).squeeze(0)
+        
+        # Convert to half precision
+        model = model.half()
+        decoder = decoder.half()
+        style_embed = style_embed.half()
+        
+        for variant_idx, seed in enumerate(seeds):
+            variant_label = f"V{variant_idx + 1}/{num_variants}"
+            jobs[job_id]["logs"].append(f"🎵 DiffRhythm2: Iniciando variante {variant_label} (seed={seed})...")
+            
+            variant_output = f"{OUTPUT_DIR}/{job_id}/v{variant_idx + 1}"
+            os.makedirs(variant_output, exist_ok=True)
+            output_mp3 = f"{variant_output}/raw.mp3"
+            
+            # Parse lyrics into tokens
+            torch.manual_seed(seed)
+            random.seed(seed)
+            
+            tokens_list = []
+            has_start = False
+            for line in lrc_lines:
+                line = line.strip()
+                if not line:
+                    continue
+                if STRUCT_PATTERN.match(line):
+                    idx = STRUCT.get(line.lower())
+                    if idx is not None:
+                        if idx == STRUCT["[start]"]:
+                            has_start = True
+                        tokens_list.append([idx, STRUCT["[stop]"]])
+                else:
+                    phone, token = chn_eng_g2p(line)
+                    token = [x + 1 for x in token]
+                    tokens_list.append(token + [STRUCT["[stop]"]])
+            
+            if tokens_list and not has_start:
+                tokens_list = [[STRUCT["[start]"], STRUCT["[stop]"]]] + tokens_list
+            
+            lyrics_token = torch.tensor(sum(tokens_list, []), dtype=torch.long, device=DEVICE)
+            
+            # Run inference
+            duration = 95.0  # ~1.5 min song
+            cfg = 2.5
+            steps = 16
+            
+            t0 = _time.time()
+            torch.cuda.empty_cache()
+            
+            with torch.inference_mode():
+                latent = model.sample_block_cache(
+                    text=lyrics_token.unsqueeze(0),
+                    duration=int(duration * 5),
+                    style_prompt=style_embed.unsqueeze(0),
+                    steps=steps,
+                    cfg_strength=cfg,
+                    process_bar=False,
+                )
+                latent = latent.transpose(1, 2)
+                audio = decoder.decode_audio(latent, overlap=5, chunk_size=20)
+            
+            t1 = _time.time()
+            inference_time = t1 - t0
+            jobs[job_id]["logs"].append(f"⚡ DiffRhythm2 {variant_label}: inferencia en {inference_time:.1f}s")
+            
+            # Save audio
+            import numpy as np
+            import pedalboard
+            
+            audio_np = audio.float().cpu().numpy().squeeze()[None, :]
+            # Fake stereo
+            left = audio_np
+            right = audio_np * 0.8
+            delay = int(0.01 * SR)
+            right = np.roll(right, delay)
+            right[:, :delay] = 0
+            stereo = np.concatenate([left, right], axis=0)
+            
+            with pedalboard.io.AudioFile(output_mp3, "w", SR, 2) as f:
+                f.write(stereo)
+            
+            if os.path.exists(output_mp3):
+                # Apply mastering
+                jobs[job_id]["logs"].append(f"🎚️ Masterizando variante {variant_label}...")
+                final_path = _finalize_audio(output_mp3, job_id, variant_idx)
+                
+                if variant_idx == 0:
+                    audio_url = f"/outputs/{job_id}.mp3"
+                else:
+                    audio_url = f"/outputs/{job_id}_v{variant_idx + 1}.mp3"
+                
+                from audio_master import get_audio_metrics
+                metrics = get_audio_metrics(final_path)
+                
+                variant_results.append({
+                    "index": variant_idx,
+                    "seed": seed,
+                    "audio_url": audio_url,
+                    "duration": metrics.get("duration_seconds", 0),
+                    "file_size": metrics.get("file_size_bytes", 0),
+                    "lufs": metrics.get("lufs", 0),
+                })
+                
+                jobs[job_id]["logs"].append(
+                    f"✅ DiffRhythm2 {variant_label} lista: {metrics.get('duration_seconds', 0):.1f}s, "
+                    f"LUFS: {metrics.get('lufs', 0):.1f}, inferencia: {inference_time:.1f}s"
+                )
+            else:
+                variant_results.append({
+                    "index": variant_idx,
+                    "seed": seed,
+                    "audio_url": None,
+                    "error": "Failed to generate audio",
+                })
+            
+            jobs[job_id]["completed_variants"] = variant_idx + 1
+        
+        # Cleanup GPU memory
+        del model, mulan, decoder, style_embed
+        torch.cuda.empty_cache()
+        
+        # All variants complete
+        jobs[job_id]["variants"] = variant_results
+        successful = [v for v in variant_results if v.get("audio_url")]
+        
+        if successful:
+            best = max(
+                successful,
+                key=lambda v: (
+                    v.get("duration", 0),
+                    -abs(v.get("lufs", 0) - (-14)),
+                )
+            )
+            
+            if best["index"] != 0 and best.get("audio_url"):
+                import shutil
+                best_source = f"{OUTPUT_DIR}/{job_id}_v{best['index'] + 1}.mp3"
+                best_dest = f"{OUTPUT_DIR}/{job_id}.mp3"
+                if os.path.exists(best_source):
+                    shutil.copy2(best_source, best_dest)
+            
+            primary_url = f"/outputs/{job_id}.mp3"
+            jobs[job_id].update({
+                "status": "done",
+                "audio_url": primary_url,
+                "best_variant": best["index"],
+            })
+            jobs[job_id]["logs"].append(
+                f"🏆 Mejor variante DiffRhythm2: V{best['index'] + 1} "
+                f"(duración: {best.get('duration', 0):.1f}s, LUFS: {best.get('lufs', 0):.1f})"
+            )
+            jobs[job_id]["logs"].append("✅ Generación DiffRhythm2 completada.")
+        else:
+            jobs[job_id].update({
+                "status": "error",
+                "error": "Todas las variantes DiffRhythm2 fallaron.",
+            })
+    
+    except Exception as e:
+        logger.error(f"[DiffRhythm2] ❌ Error crítico: {e}", exc_info=True)
+        jobs[job_id].update({"status": "error", "error": str(e)})
 
 
 @app.get("/api/job/{job_id}")
