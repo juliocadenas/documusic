@@ -136,10 +136,12 @@ main { flex: 1; padding: 40px; max-width: 1200px; margin: 0 auto; width: 100%; }
 .model-card.yue::before { background: radial-gradient(circle at top left, rgba(124,58,237,0.1), transparent 70%); }
 .model-card.ace::before { background: radial-gradient(circle at top left, rgba(6,182,212,0.1), transparent 70%); }
 .model-card.heartmula::before { background: radial-gradient(circle at top left, rgba(239,68,68,0.1), transparent 70%); }
+.model-card.diffrhythm::before { background: radial-gradient(circle at top left, rgba(168,85,247,0.1), transparent 70%); }
 
 .model-card.selected.yue { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), var(--glow); }
 .model-card.selected.ace { border-color: var(--accent2); box-shadow: 0 0 0 1px var(--accent2); }
 .model-card.selected.heartmula { border-color: #ef4444; box-shadow: 0 0 0 1px #ef4444, 0 0 20px rgba(239,68,68,0.3); }
+.model-card.selected.diffrhythm { border-color: #a855f7; box-shadow: 0 0 0 1px #a855f7, 0 0 20px rgba(168,85,247,0.3); }
 .model-card.selected::before { opacity: 1; }
 
 .model-badge {
@@ -156,6 +158,7 @@ main { flex: 1; padding: 40px; max-width: 1200px; margin: 0 auto; width: 100%; }
 .model-badge.yue { background: rgba(124,58,237,0.2); color: #a78bfa; }
 .model-badge.ace { background: rgba(6,182,212,0.2); color: #67e8f9; }
 .model-badge.heartmula { background: rgba(239,68,68,0.2); color: #f87171; font-weight: 600; }
+.model-badge.diffrhythm { background: rgba(168,85,247,0.2); color: #c084fc; font-weight: 600; }
 
 .model-name { font-size: 1.1rem; font-weight: 700; margin-bottom: 6px; }
 .model-desc { font-size: 0.8rem; color: var(--text-dim); line-height: 1.5; }

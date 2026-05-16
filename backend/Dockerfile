@@ -63,6 +63,34 @@ RUN mkdir -p /app/models/HeartMuLa && \
     hf download --local-dir './HeartMuLa-oss-3B' 'HeartMuLa/HeartMuLa-oss-3B-happy-new-year' && \
     hf download --local-dir './HeartCodec-oss' 'HeartMuLa/HeartCodec-oss-20260123' || echo "⚠️ HeartMuLa checkpoints download failed - will retry at runtime"
 
+# ============================================================
+# DiffRhythm2 — Block Flow Matching Music Generation
+# ============================================================
+RUN pip3 install \
+    torchdiffeq \
+    g2p_en \
+    pydub \
+    muq \
+    pedalboard \
+    safetensors
+
+# Patch torchaudio CUDA version check (PyTorch nightly may report different CUDA version than torchaudio)
+RUN TA_UTILS=$(python3 -c "import torchaudio._extension.utils as u; print(u.__file__)" 2>/dev/null) && \
+    if [ -n "$TA_UTILS" ]; then \
+    python3 -c "
+import re
+f='$TA_UTILS'
+lines=open(f).readlines(); new=[]; skip=False; ind=0
+for l in lines:
+    if l.strip().startswith('def _check_cuda_version('):
+        ind=len(l)-len(l.lstrip()); new.append(l); new.append(' '*(ind+4)+'pass\n'); skip=True; continue
+    if skip:
+        if l.strip()=='' or (len(l)-len(l.lstrip())>ind): continue
+        else: skip=False
+    new.append(l)
+open(f,'w').writelines(new); print('patched',f)
+" || echo "torchaudio patch skipped"; fi
+
 # API Framework
 RUN pip3 install fastapi uvicorn httpx python-multipart
 

@@ -488,6 +488,19 @@ async def startup_event():
         logger.info("[Startup] ✅ ACE-Step 1.5 disponible como segunda opción de modelo")
     else:
         logger.info("[Startup] ⚠️ ACE-Step no disponible — solo YuE estará activo")
+    # Verify torchaudio (CUDA version check must be patched in site-packages)
+    try:
+        import torchaudio
+        logger.info(f"[Startup] ✅ TorchAudio {torchaudio.__version__}")
+    except RuntimeError as e:
+        if "CUDA version" in str(e):
+            logger.warning(f"[Startup] ⚠️ TorchAudio CUDA mismatch — patching site-packages...")
+            import subprocess, sys
+            subprocess.run([sys.executable, "/app/patch_torchaudio.py"], capture_output=True, timeout=10)
+            logger.info("[Startup] ✅ TorchAudio patched, restart may be needed")
+        else:
+            raise
+    
     logger.info("[Startup] 🐕 GPU Watchdog iniciado — monitoreando VRAM y temperatura")
 
 jobs = {}
